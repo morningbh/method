@@ -201,3 +201,36 @@
 - Test #32 renumbering: /tester initially wrote 40 tests but missed design #32 and #39. Added them as items 41 and 42. Full suite count 141 = 100 prior + 40 initial + 2 catch-up - 1 (one of the 40 was replaced). Actually 100 + 41 = 141. Verified.
 - Background task on server restart will leave running rows stuck. M5 should add a startup sweep.
 - `claude_runner.stream` mocked at `app.services.research_runner.stream` import seam. Tests never hit real claude.
+
+## 2026-04-19 — Session 1 continued: M4 Frontend UI
+
+### Shipped
+- `feat/m4-frontend` merged to `main`
+- `app/routers/history.py` — GET /, /history, /history/<id>, /api/history
+- `app/templates/` — index.html (workspace), history.html (list), history_detail.html (SSE client), _topbar.html (partial)
+- `app/static/style.css` (~300 lines) — full design system per spec §7.1 + 768px mobile breakpoint
+- `app/static/app.js` (307 lines) — login FSM, file upload drag+drop, SSE client + polling fallback, marked rendering
+- `app/static/vendor/marked.min.js` (35KB, v12.0.0)
+- Deleted `landing.html` (replaced by index.html)
+- 26 new tests (16 history + 8 index/static + 2 unit) — suite now 167 passing + 2 skipped
+
+### 10-step workflow
+- design-check iter 1 PASS (3 minor WARNs noted)
+- RED → GREEN in single pass, zero test modifications
+- /review APPROVED (0 Critical/Important, 4 Minor)
+
+### Non-obvious decisions
+- Marked v12.0.0 no sanitize — accepted risk per design §11 (content is assistant's own stream, HttpOnly cookies, CSRF covered). Revisit if plan-sharing feature added.
+- SSE client distinguishes server-emitted error events (typed) from transport-layer errors (onerror); only transport errors trigger polling fallback.
+- History list uses single LEFT JOIN + GROUP BY for file count — no N+1.
+- Poll cap at 100 attempts × 3s = 5 min (tighter than design's "no cap", defensive).
+- `format_beijing` helper in history.py for UTC→Beijing display.
+- Mobile breakpoint 768px, touch targets ≥44px, font-size ≥16px on inputs (iOS anti-zoom).
+
+### Things user should know
+- landing.html is gone. `/` now shows workspace (authed) or redirects to /login.
+- Deploying: M5 still needs to set BASE_URL in .env once Cloudflare tunnel URL is known.
+- The SSE client JS has NO automated tests (httpx ASGITransport can't truly stream). Manual QA needed once deployed.
+
+### Process lesson
+- /design-check caught the right things early; /tester needed no revision cycles. Writing the design doc exhaustively (field mapping, error table, files list) paid off.
