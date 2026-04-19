@@ -235,18 +235,34 @@ async def test_extraction_timeout_does_not_block_event_loop(
 
     async def ticker() -> None:
         nonlocal ticks
-        for _ in range(20):
+        # Run long enough to span the 0.5s extract; the test stops it via cancel.
+        while True:
             await asyncio.sleep(0.05)
             ticks += 1
 
     ticker_task = asyncio.create_task(ticker())
+    # Give ticker one chance to start before we begin the extraction.
+    await asyncio.sleep(0.01)
     content = SAMPLE_PDF.read_bytes()
+    start = time.monotonic()
     await fp.save_and_extract(VALID_ULID, "sample.pdf", content)
-    await ticker_task
+    ticks_during_save = ticks
+    elapsed = time.monotonic() - start
+    ticker_task.cancel()
+    try:
+        await ticker_task
+    except asyncio.CancelledError:
+        pass
 
-    # If the event loop had been blocked for 0.5s, fewer than ~8 ticks would
-    # have fired. We expect close to the full 20.
-    assert ticks >= 8, f"event loop appears blocked during extraction: ticks={ticks}"
+    # Two invariants must both hold:
+    # 1. The ticker accumulated enough ticks *during* the save to prove the
+    #    event loop kept running concurrently with the blocking extractor.
+    # 2. Total wall time is well under 2x the blocking cost, proving the
+    #    extractor ran in parallel with the ticker rather than serially.
+    assert ticks_during_save >= 5, (
+        f"event loop blocked during extraction: ticks_during_save={ticks_during_save}"
+    )
+    assert elapsed < 0.75, f"extraction wall-time {elapsed:.2f}s suggests blocking"
 
 
 # ---------------------------------------------------------------------------
