@@ -1,26 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
-<section data-state="initial">
-  <h1>登录 Method</h1>
-  <form id="login-form">
-    <label for="email">邮箱</label>
-    <input id="email" type="email" name="email" required>
-    <button type="submit">发送验证码</button>
-  </form>
-</section>
+<div class="login-wrap">
+  <div class="login-card">
+    <div class="brand">Method</div>
+    <p class="tagline">研究问题 &rarr; 研究方案</p>
 
-<section data-state="code-sent" hidden>
-  <h1>输入验证码</h1>
-  <form id="code-form">
-    <label for="code">6 位验证码</label>
-    <input id="code" type="text" name="code" inputmode="numeric" pattern="\d{6}" maxlength="6" required>
-    <button type="submit">登录</button>
-  </form>
-</section>
+    <section data-state="initial">
+      <form id="login-form">
+        <label for="email">邮箱</label>
+        <input id="email" type="email" name="email" required placeholder="you@example.com">
+        <button type="submit" class="primary">发送验证码</button>
+      </form>
+      <p class="hint">首次使用会自动注册</p>
+    </section>
 
-<section data-state="pending" hidden>
-  <h1>等待审批</h1>
-  <p>注册申请已提交，管理员批准后会发送登录验证码。</p>
-</section>
+    <section data-state="code-sent" hidden>
+      <h1>输入验证码</h1>
+      <form id="code-form">
+        <label for="code">6 位验证码</label>
+        <input id="code" type="text" name="code" inputmode="numeric" pattern="\d{6}" maxlength="6" required placeholder="123456">
+        <button type="submit" class="primary">登录</button>
+      </form>
+    </section>
+
+    <section data-state="pending" hidden>
+      <h1>等待审批</h1>
+      <p>注册申请已提交，管理员批准后会发送登录验证码。</p>
+    </section>
+  </div>
+</div>
 <script src="/static/app.js"></script>
 {% endblock %}
