@@ -349,15 +349,22 @@ cmd = [
     "--model", "claude-opus-4-7",
     "--allowed-tools", "Read,Glob,Grep",
     "--permission-mode", "acceptEdits",
-    "--cwd", sandbox_dir,    # /var/method/uploads/<request_id>/
+    "--add-dir", sandbox_dir,    # /var/method/uploads/<request_id>/ — grants tool access
 ]
+proc = await asyncio.create_subprocess_exec(
+    *cmd,
+    stdout=asyncio.subprocess.PIPE,
+    stderr=asyncio.subprocess.PIPE,
+    cwd=sandbox_dir,    # actual subprocess working directory
+)
 ```
 
 - `-p` = print 模式（一次性 prompt，不进入交互）
 - `--output-format stream-json` = 每个模型 delta 作为一行 JSON 输出，方便转 SSE
 - `--allowed-tools Read,Glob,Grep` = 白名单；禁止 Write/Edit/Bash 保证沙箱
 - `--permission-mode acceptEdits` = 不在 stdin 等交互批准（只读 + 查找，无副作用）
-- `--cwd` = 限定工作目录 = 用户此次上传文件所在的临时目录
+- `--add-dir` = 把此次上传的临时目录加入 CLI 允许访问列表，保证 Read/Glob/Grep 能读到上传文件
+- `cwd=` kwarg 传给 `create_subprocess_exec`：真正的子进程工作目录在这里设置。真正的 `claude` CLI 没有 `--cwd` 选项，传了会报 "unknown option"
 
 ### 5.2 Prompt 模板
 
