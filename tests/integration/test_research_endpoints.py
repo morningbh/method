@@ -293,18 +293,21 @@ async def test_get_research_stream_sse_events(
 ):
     user, raw = await auth_session("sse@example.com")
 
-    # Configure fake stream with small deltas + done. We want enough latency
-    # for the SSE consumer to connect before the background task finishes,
-    # so insert an await sleep between events.
+    # Configure fake stream with small deltas + done. We use brief asyncio
+    # sleeps between events so the SSE consumer has a chance to subscribe
+    # before deltas are published (see research_runner's subscriber wait).
+    # NOTE: the original test design used an asyncio.Event to gate the done
+    # event on a test-side `delay.set()` inside aiter_text iteration; that
+    # pattern deadlocks under httpx.ASGITransport, which buffers the entire
+    # response body before returning control to aiter_text. Sleeps achieve
+    # the same "subscriber-connects-first" ordering without the deadlock.
     from app.services import research_runner as rr
 
-    delay = asyncio.Event()
-
     async def _fake(prompt, cwd):
+        await asyncio.sleep(0.05)
         yield ("delta", "# A\n")
         yield ("delta", "B\n")
-        # Wait for the test to allow completion.
-        await delay.wait()
+        await asyncio.sleep(0.05)
         yield ("done", "# A\nB\n", 0.5, 321)
 
     monkeypatch.setattr(rr, "stream", _fake)
@@ -325,7 +328,7 @@ async def test_get_research_stream_sse_events(
         assert response.status_code == 200
         assert response.headers.get("content-type", "").startswith("text/event-stream")
 
-        # Read one event record (event: X\ndata: Y\n\n).
+        # Read all event records (event: X\ndata: Y\n\n).
         buf = ""
         got_delta = False
         async for chunk in response.aiter_text():
@@ -336,8 +339,6 @@ async def test_get_research_stream_sse_events(
                 events.append(raw_ev)
                 if "event: delta" in raw_ev:
                     got_delta = True
-                    # Release the fake stream to send done.
-                    delay.set()
                 if "event: done" in raw_ev:
                     break
             else:
@@ -1059,12 +1060,15 @@ async def test_sse_done_event_payload_includes_markdown_cost_elapsed(
 
     user, raw = await auth_session("ssepay@example.com")
 
-    release = asyncio.Event()
-
+    # NOTE: original test used an asyncio.Event to gate done on a test-side
+    # `release.set()` inside aiter_text iteration; that deadlocks under
+    # httpx.ASGITransport (which buffers the full body before returning to
+    # aiter_text). Brief sleeps let the SSE subscriber attach before events
+    # are published while still producing a deterministic done payload.
     async def _fake(prompt, cwd):
-        # Let the SSE subscriber attach before emitting done.
+        await asyncio.sleep(0.05)
         yield ("delta", "x")
-        await release.wait()
+        await asyncio.sleep(0.05)
         yield ("done", "# final-md\n", 1.23, 4567)
 
     monkeypatch.setattr(rr, "stream", _fake)
@@ -1084,8 +1088,6 @@ async def test_sse_done_event_payload_includes_markdown_cost_elapsed(
         assert response.status_code == 200
         async for chunk in response.aiter_text():
             collected += chunk
-            if "event: delta" in collected:
-                release.set()
             if "event: done" in collected:
                 break
 

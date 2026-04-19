@@ -151,6 +151,10 @@ async def seeded_user(integration_db):
         integration_db.add(user)
         await integration_db.commit()
         await integration_db.refresh(user)
+        # Detach so subsequent ``integration_db.expire_all()`` calls in tests
+        # don't invalidate the already-loaded column values (sync access to
+        # expired attrs on an async session fails with MissingGreenlet).
+        integration_db.expunge(user)
         created.append(user)
         return user
 

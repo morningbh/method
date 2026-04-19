@@ -1,0 +1,14 @@
+/research-method-designer
+
+用户的研究问题：
+{{ question }}
+
+{% if uploaded_files -%}
+用户上传了以下资料（相对于当前工作目录）：
+{% for f in uploaded_files -%}
+- {{ f.original_name }} → {{ f.local_path }}{% if not f.extraction_ok %} (解析失败，已忽略){% endif %}
+{% endfor %}
+请根据需要用 Read 工具阅读这些文件，把相关内容纳入研究方案的"已有材料"部分。
+
+{% endif -%}
+请直接产出完整的研究方案 markdown（按 skill 要求的 10 节结构）。
