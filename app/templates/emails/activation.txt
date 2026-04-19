@@ -1,0 +1,5 @@
+你的 Method 账号 ({{ user_email }}) 已通过审批。
+
+现在可以访问 {{ base_url }} 登录了。
+
+— Method
