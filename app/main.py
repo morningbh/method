@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.db import init_db
-from app.routers import admin, auth, health
+from app.routers import admin, auth, health, research
 
 _APP_DIR = Path(__file__).resolve().parent
 _TEMPLATE_DIR = _APP_DIR / "templates"
@@ -29,6 +29,7 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(research.router)
 auth.install_exception_handlers(app)
 
 
