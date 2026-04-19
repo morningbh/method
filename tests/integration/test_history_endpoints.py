@@ -15,7 +15,6 @@ topbar + XSS escape.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 
 def _utcnow_naive() -> datetime:

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 _APP_DIR = Path(__file__).resolve().parents[2] / "app"
 _MARKED_PATH = _APP_DIR / "static" / "vendor" / "marked.min.js"
 

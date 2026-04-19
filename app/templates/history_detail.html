@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block topbar %}{% include "_topbar.html" %}{% endblock %}
+{% block content %}
+<section class="detail" data-request-id="{{ request_id }}" data-initial-status="{{ status }}">
+  <a class="back" href="/history">&larr; 返回历史</a>
+  <h2>研究问题</h2>
+  <blockquote class="question">{{ question }}</blockquote>
+  {% if files %}
+  <p class="uploaded-files">上传资料：
+    {% for f in files %}{{ f.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+  <div class="status-row">
+    <span class="status-indicator status-{{ status }}">
+      {% if status in ("pending", "running") %}&#9679; 生成中{% elif status == "done" %}&#9679; 已完成{% else %}&#10007; 失败{% endif %}
+    </span>
+    <button id="copy-btn" type="button"{% if status != "done" %} disabled{% endif %}>复制</button>
+    <a id="download-btn" class="button" href="/api/research/{{ request_id }}/download"{% if status != "done" %} aria-disabled="true" tabindex="-1"{% endif %}>下载 .md</a>
+  </div>
+  {% if status == "failed" %}
+  <div class="error-banner">{{ error_message }}</div>
+  {% endif %}
+  <article id="markdown-body" class="markdown"></article>
+</section>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/app.js"></script>
+{% endblock %}

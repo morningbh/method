@@ -6,7 +6,6 @@ RED until templates + static files exist.
 """
 from __future__ import annotations
 
-
 # ===========================================================================
 # #16. base.html includes viewport meta
 # ===========================================================================
