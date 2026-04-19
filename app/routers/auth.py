@@ -64,10 +64,6 @@ async def get_current_user(
         return await auth_flow.validate_session_cookie(session, method_session)
 
 
-class _AuthRequiredError(Exception):
-    """Internal marker to pass context from ``require_user`` to a handler."""
-
-
 async def require_user(
     request: Request,
     user: User | None = Depends(get_current_user),
