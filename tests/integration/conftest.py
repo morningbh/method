@@ -243,3 +243,81 @@ async def seed_session(integration_db):
         return row, raw_token
 
     return _factory
+
+
+@pytest_asyncio.fixture
+async def auth_session(seeded_user, seed_session):
+    """Factory: seed an active user + session. Returns (user, raw_session_cookie).
+
+    The caller attaches the cookie via ``app_client.cookies.set("method_session", raw)``.
+    Used by Task 3.3 integration tests for authed POST/GET on /api/research.
+    """
+    counter = {"n": 0}
+
+    async def _factory(
+        email: str = "researcher@example.com",
+        *,
+        status: str = "active",
+    ):
+        user = await seeded_user(email, status=status)
+        counter["n"] += 1
+        raw_token = f"auth-session-raw-token-{counter['n']}-{email}"
+        _row, raw = await seed_session(user.id, raw_token=raw_token)
+        return user, raw
+
+    return _factory
+
+
+@pytest_asyncio.fixture
+async def research_paths(tmp_path, monkeypatch, app_client):
+    """Override ``settings.upload_dir`` and ``settings.plan_dir`` to tmp.
+
+    Depends on app_client so settings is instantiated. Returns (upload_dir, plan_dir).
+    """
+    from app import config as config_mod
+
+    upload = tmp_path / "uploads"
+    plan = tmp_path / "plans"
+    upload.mkdir(parents=True, exist_ok=True)
+    plan.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(config_mod.settings, "upload_dir", str(upload))
+    monkeypatch.setattr(config_mod.settings, "plan_dir", str(plan))
+    return upload, plan
+
+
+@pytest_asyncio.fixture
+async def mocked_claude_runner(monkeypatch, app_client):
+    """Monkeypatch ``app.services.research_runner.stream`` to a configurable fake.
+
+    Returns a setter: ``setter(events)`` installs a fake that yields each event
+    in ``events`` in order. An ``events`` element may be a tuple (canned event)
+    or a callable returning an awaitable (for side effects). Tests call the
+    setter before triggering the POST.
+
+    The underlying call-seam is ``research_runner.stream``, imported at module
+    scope (``from app.services.claude_runner import stream``). Patching the
+    attribute on research_runner prevents real subprocess spawn.
+    """
+    # Use a mutable container so the stream callable can be swapped per-test.
+    holder = {"events": []}
+
+    async def _fake_stream(prompt, cwd):
+        for ev in holder["events"]:
+            yield ev
+
+    # Defer patching until research_runner exists (RED phase: first patch attempt
+    # will raise ModuleNotFoundError — that's the point of RED).
+    try:
+        from app.services import research_runner as rr
+
+        monkeypatch.setattr(rr, "stream", _fake_stream)
+    except ModuleNotFoundError:
+        # Module doesn't exist yet — RED phase. Tests will fail to import
+        # research_runner anyway; don't mask the real error here.
+        pass
+
+    def set_events(events):
+        holder["events"] = list(events)
+        return holder
+
+    return set_events
