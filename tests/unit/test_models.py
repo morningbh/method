@@ -261,3 +261,102 @@ async def test_indexes_exist(db_session):
     names = {row[0] for row in result.all()}
     assert "idx_sessions_token" in names
     assert "idx_login_codes_user" in names
+
+
+# ---------------------------------------------------------------------------
+# research_requests + uploaded_files (Task 3.1) — new tables introduced in
+# this milestone. Tests #17–#19 from design issue-2-task-3.1-file-processor §10.
+# ---------------------------------------------------------------------------
+
+
+async def test_research_requests_crud(db_session):
+    """Insert a ResearchRequest, read it back, and verify every column
+    round-trips (ULID id, FK to users, status, plan_path/error_message nulls,
+    model, created_at, completed_at).
+    """
+    from app.models import ResearchRequest, User
+
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    user = User(email="rr@example.com", status="active", created_at=now, approved_at=now)
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    req = ResearchRequest(
+        id="01HXZK8D7Q3V0S9B4W2N6M5C7R",
+        user_id=user.id,
+        question="What is the future of AI?",
+        status="pending",
+        plan_path=None,
+        error_message=None,
+        model="claude-opus-4-7",
+        created_at=now,
+        completed_at=None,
+    )
+    db_session.add(req)
+    await db_session.commit()
+
+    result = await db_session.execute(
+        select(ResearchRequest).where(ResearchRequest.id == "01HXZK8D7Q3V0S9B4W2N6M5C7R")
+    )
+    fetched = result.scalar_one()
+    assert fetched.id == "01HXZK8D7Q3V0S9B4W2N6M5C7R"
+    assert fetched.user_id == user.id
+    assert fetched.question == "What is the future of AI?"
+    assert fetched.status == "pending"
+    assert fetched.plan_path is None
+    assert fetched.error_message is None
+    assert fetched.model == "claude-opus-4-7"
+    assert fetched.created_at == now
+    assert fetched.completed_at is None
+
+
+async def test_uploaded_files_fk_enforces_request_id(db_session):
+    """Inserting an uploaded_files row pointing at a non-existent research_request
+    must raise IntegrityError. Proves the FK is declared AND that the engine-level
+    foreign_keys PRAGMA is active (design §6.2).
+    """
+    from app.models import UploadedFile
+
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    db_session.add(
+        UploadedFile(
+            request_id="01HXZK8D7Q3V0S9B4W2N6M5C7R",  # no such research_request
+            original_name="orphan.pdf",
+            stored_path="/abs/path/to/orphan.pdf",
+            extracted_path=None,
+            size_bytes=100,
+            mime_type="application/pdf",
+            created_at=now,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+async def test_research_requests_status_check_constraint(db_session):
+    """status must be one of pending/running/done/failed (design §6.1).
+    Any other value must raise IntegrityError via the CHECK constraint.
+    """
+    from app.models import ResearchRequest, User
+
+    now = datetime(2026, 4, 19, 12, 0, 0)
+    user = User(email="bogus@example.com", status="active", created_at=now, approved_at=now)
+    db_session.add(user)
+    await db_session.commit()
+    await db_session.refresh(user)
+
+    db_session.add(
+        ResearchRequest(
+            id="01HXZK8D7Q3V0S9B4W2N6M5C7S",
+            user_id=user.id,
+            question="Q",
+            status="bogus",  # not in the CHECK whitelist
+            model="claude-opus-4-7",
+            created_at=now,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
