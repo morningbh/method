@@ -376,6 +376,11 @@ async def test_request_login_code_rate_limit_within_60s(
     from app.services.auth_flow import RateLimitError, request_login_code
 
     user = await _insert_user(db_session, "rl@example.com", "active")
+    # Capture PK before any rollback — SQLAlchemy expires ORM attributes on
+    # rollback by default, and reading an expired attribute on aiosqlite
+    # triggers ``MissingGreenlet`` (cannot emit a lazy-load SELECT from plain
+    # async code). Using a plain int sidesteps the issue entirely.
+    user_id = user.id
 
     # First call issues a code.
     first = await request_login_code(db_session, "rl@example.com")
@@ -385,7 +390,7 @@ async def test_request_login_code_rate_limit_within_60s(
     count_after_first = len(
         (
             await db_session.execute(
-                select(LoginCode).where(LoginCode.user_id == user.id)
+                select(LoginCode).where(LoginCode.user_id == user_id)
             )
         ).scalars().all()
     )
@@ -402,7 +407,7 @@ async def test_request_login_code_rate_limit_within_60s(
     count_after_second = len(
         (
             await db_session.execute(
-                select(LoginCode).where(LoginCode.user_id == user.id)
+                select(LoginCode).where(LoginCode.user_id == user_id)
             )
         ).scalars().all()
     )

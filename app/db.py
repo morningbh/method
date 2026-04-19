@@ -13,67 +13,12 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy.orm.session import SessionTransaction as _SessionTransaction
 
 from app import config as _config
 
 
 class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
-
-
-# ---------------------------------------------------------------------------
-# Rollback-without-expire patch
-# ---------------------------------------------------------------------------
-#
-# Under async SQLAlchemy (aiosqlite), reading an expired ORM attribute outside
-# a greenlet-spawn context raises ``MissingGreenlet`` — the ORM wants to issue
-# a lazy-load SQL to repopulate the attribute, but it cannot bridge async→sync
-# from plain Python code. The default ``Session.rollback()`` unconditionally
-# expires every persistent object (via ``SessionTransaction._restore_snapshot``)
-# so that the next access fetches fresh state. For sync code this is fine; for
-# async code it means any router (or test) that holds a reference to an ORM
-# object across a rollback can no longer even read its PK without triggering
-# a greenlet error.
-#
-# ``expire_on_commit=False`` only suppresses the commit half of the expire
-# behaviour; SQLAlchemy 2.x does not expose an equivalent flag for rollback.
-# We therefore monkey-patch ``_restore_snapshot`` at import time: pending
-# inserts are still expunged, deleted objects reinstated, and identity-key
-# switches reverted — only the blanket attribute-expire loop is skipped. The
-# patch is process-wide (all Sessions in the app inherit it), which matches
-# how SQLAlchemy itself configures cross-session behaviours.
-#
-# Trade-off: after rollback, loaded attribute values may be stale relative to
-# the DB. Callers that care must re-query explicitly (``session.refresh(obj)``
-# or a fresh ``select(...)``). In practice Method's code writes through
-# typed services that return fresh ORM objects on every call, so staleness
-# across rollback boundaries is not a concern.
-
-
-def _restore_snapshot_no_expire(
-    self: _SessionTransaction, dirty_only: bool = False,
-) -> None:
-    assert self._is_transaction_boundary
-
-    to_expunge = set(self._new).union(self.session._new)
-    self.session._expunge_states(to_expunge, to_transient=True)
-
-    for s, (oldkey, _newkey) in self._key_switches.items():
-        self.session.identity_map.safe_discard(s)
-        s.key = oldkey
-        if s not in to_expunge:
-            self.session.identity_map.replace(s)
-
-    for s in set(self._deleted).union(self.session._deleted):
-        self.session._update_impl(s, revert_deletion=True)
-
-    assert not self.session._deleted
-    # Intentionally omit the per-state `_expire` loop that vanilla SQLAlchemy
-    # runs here — see the module-level comment above.
-
-
-_SessionTransaction._restore_snapshot = _restore_snapshot_no_expire
 
 
 _engine: AsyncEngine | None = None
