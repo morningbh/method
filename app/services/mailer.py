@@ -22,7 +22,7 @@ from pathlib import Path
 import aiosmtplib
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from app.config import settings
+from app import config as _config
 
 logger = logging.getLogger("method.mailer")
 
@@ -72,7 +72,7 @@ async def send_approval_request(
 async def send_activation_notice(to_email: str) -> None:
     """Tell a newly-approved user their account is active (spec §4.2)."""
     body = _env.get_template("activation.txt").render(
-        user_email=to_email, base_url=settings.base_url
+        user_email=to_email, base_url=_config.settings.base_url
     )
     await _send(to_email, "Method 账号已激活", body)
 
@@ -88,8 +88,8 @@ _BACKOFF_SECONDS = (1, 2, 4)  # sleep after attempt N before N+1
 
 def _build_message(to_email: str, subject: str, body: str) -> EmailMessage:
     msg = EmailMessage()
-    from_name = settings.smtp_from_name or ""
-    from_addr = settings.smtp_from
+    from_name = _config.settings.smtp_from_name or ""
+    from_addr = _config.settings.smtp_from
     msg["From"] = f"{from_name} <{from_addr}>" if from_name else from_addr
     msg["To"] = to_email
     msg["Subject"] = subject
@@ -106,12 +106,12 @@ async def _send(to_email: str, subject: str, body: str) -> None:
         try:
             await aiosmtplib.send(
                 msg,
-                hostname=settings.smtp_host,
-                port=settings.smtp_port,
-                username=settings.smtp_user or None,
-                password=settings.smtp_password or None,
-                start_tls=settings.smtp_port == 587,
-                use_tls=settings.smtp_port == 465,
+                hostname=_config.settings.smtp_host,
+                port=_config.settings.smtp_port,
+                username=_config.settings.smtp_user or None,
+                password=_config.settings.smtp_password or None,
+                start_tls=_config.settings.smtp_port == 587,
+                use_tls=_config.settings.smtp_port == 465,
                 timeout=30,
             )
             logger.info(

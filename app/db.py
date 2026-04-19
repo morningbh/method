@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.orm import DeclarativeBase
 
-from app.config import settings
+from app import config as _config
 
 
 class Base(DeclarativeBase):
@@ -44,9 +44,9 @@ def get_engine() -> AsyncEngine:
     """Return the cached async engine, creating it on first use."""
     global _engine
     if _engine is None:
-        Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(_config.settings.db_path).parent.mkdir(parents=True, exist_ok=True)
         _engine = create_async_engine(
-            f"sqlite+aiosqlite:///{settings.db_path}",
+            f"sqlite+aiosqlite:///{_config.settings.db_path}",
             echo=False,
             future=True,
         )
