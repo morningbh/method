@@ -67,3 +67,48 @@
 ### Process lesson
 - Preflight doc requirements (docs/HARNESS.md, AGENT_CONTEXT, TESTER_PROMPT, CODE_REVIEW_PROMPT, DEV_LOG) should have been created at project init, not after Task 2.3 kicked off. Lost ~5 min to bootstrap. Template for future projects: run preflight at first task, gating.
 - Implementer's first-pass introduced a global SQLAlchemy monkey-patch to make a test pass. Review round caught it; fix was to capture PK before rollback (Option A from design-check-style alternatives) rather than hack production code. Reinforces: never modify production to make tests pass; the smell is the test, fix the test.
+
+## 2026-04-19 — Session 1 continued: M2 Task 2.4 auth routes
+
+### Shipped
+- `feat/m2-auth-routes` merged to `main`
+- `app/routers/auth.py` — POST /api/auth/{request_code,verify_code,logout}, GET /login, GET /
+- `app/routers/admin.py` — GET /admin/approve
+- HTML templates: base.html, login.html, approved.html, approval_error.html, landing.html
+- `app/main.py` — Jinja2Templates on app.state.templates, StaticFiles at /static, auth/admin routers, marker exception handlers
+- `pyproject.toml` — added `pydantic[email]` (EmailStr requires email-validator)
+- 24 new integration tests — total suite now 65, all green
+- ruff clean on `app tests`
+
+### Workflow actually executed (full 10 steps, second time)
+- Step 0 preflight — re-used docs from Task 2.3
+- Step 2a `/design-check` — iter 1 PASS (no revisions needed)
+- Step 2b Feishu design: UWPgdJlwToDMLMxx2v4c7UXnndc (non-blocking)
+- Step 3 `/tester` — 24 RED tests
+- Step 4 `/test-quality-check` — PASS (0 non-blocking advisories)
+- Step 5 Feishu tests: OVIedjH2toM0YLx4FfycfRwpneo (non-blocking)
+- Step 6 feature branch `feat/m2-auth-routes`
+- Step 7 dev loop — single pass to GREEN, 65/65 tests
+- Step 8 `/review #1` — APPROVED
+- Step 9 DEV_LOG
+
+### Non-obvious decisions
+- JSONResponse bodies (`{"error": "..."}`) used directly instead of HTTPException (which wraps in `{"detail": ...}`). Matches tested contract.
+- Internal marker exceptions (`_Unauthenticated`, `_RedirectRequired`) translated via module-level handlers instead of HTTPException raises. Keeps dependencies free of HTTPException envelope.
+- `get_current_user` opens its own session (not shared with `_db_session`) to avoid autobegin collision with the handler's `async with session.begin():`. Benign deviation from design §3; sessions close via `async with` in any case.
+- Manual Set-Cookie header assembly for logout clear-path. Starlette's `set_cookie(value="")` quotes the empty string; test expected bare empty value. One-liner header assembly used.
+
+### Tester issues caught and fixed (by implementer)
+- Tester's `await integration_db.expire_all()` was a bug: `expire_all()` is sync and returns None. Fixed by removing `await`.
+- Tester read `user.id` / `_tok.id` after `expire_all()` → triggers MissingGreenlet under aiosqlite. Fixed by capturing ints before expire_all.
+- Pre-existing ruff findings (`I001`, `UP017`, `F401`) resolved via `ruff --fix`.
+
+### Things user should know
+- Cookie secure flag is False (pre-HTTPS); M5 adds `secure=True` once Cloudflare tunnel / Let's Encrypt is live.
+- `pydantic[email]` pulls `email-validator` runtime dep — minor install size bump.
+- Design §3 `get_current_user` shares session with handler — we deviated. Consider updating design post-hoc or leave for future.
+
+### Process lesson
+- `/design-check` passed iteration 1 this time (vs iteration 2 for Task 2.3). Improvement.
+- One round of dev loop, no hack-and-revert. Faster than Task 2.3 (which had the SQLAlchemy monkey-patch → revert cycle).
+- Test quality check caught zero issues; tester's single real bug (`await expire_all`) only surfaced during implementation. Suggests the rubric doesn't check for misuse of SQLAlchemy async API — worth adding to `docs/TEST_QUALITY_CHECKER_PROMPT.md` at project level.
