@@ -73,7 +73,7 @@ async def stream(prompt: str, cwd: Path) -> AsyncIterator[Event]:
             "--model", _config.settings.claude_model,
             "--allowed-tools", "Read,Glob,Grep",
             "--permission-mode", "acceptEdits",
-            "--cwd", str(cwd),
+            "--add-dir", str(cwd),
         ]
         logger.info(
             "claude_start cmd=%s cwd=%s model=%s prompt_sha256=%s",
@@ -84,11 +84,14 @@ async def stream(prompt: str, cwd: Path) -> AsyncIterator[Event]:
         )
 
         # 1. Launch. ENOENT / PermissionError → single error event, no raise.
+        # Subprocess working directory is pinned via the ``cwd=`` kwarg (not an
+        # argv flag — the real claude CLI has no ``--cwd`` option).
         try:
             proc = await asyncio.create_subprocess_exec(
                 *argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=str(cwd),
             )
         except FileNotFoundError:
             logger.error("claude_bin not found: %s", _config.settings.claude_bin)
@@ -105,10 +108,7 @@ async def stream(prompt: str, cwd: Path) -> AsyncIterator[Event]:
         # 2. Sidecar stderr drain — prevents pipe-full deadlock (design §5).
         async def _drain_stderr() -> None:
             while True:
-                try:
-                    chunk = await proc.stderr.read(4096)
-                except (asyncio.CancelledError, Exception):
-                    raise
+                chunk = await proc.stderr.read(4096)
                 if not chunk:
                     break
                 stderr_bytes.extend(chunk)
@@ -225,15 +225,17 @@ async def stream(prompt: str, cwd: Path) -> AsyncIterator[Event]:
             elapsed_ms = int((time.monotonic() - start) * 1000)
 
             if exit_code == 0:
-                # Exit 0 but no result line — degenerate but not an error per
-                # se; emit an empty done event.
-                logger.info(
-                    "claude_done elapsed_ms=%d cost_usd=%.4f result_len=%d (no result line)",
+                # Exit 0 but no result line — surface as an error so the
+                # caller can distinguish "claude succeeded with no output"
+                # from a legitimate run. (I3 from code review.)
+                logger.error(
+                    "claude exit=0 but no result line (elapsed_ms=%d)",
                     elapsed_ms,
-                    cost_usd,
-                    len(final_result),
                 )
-                yield ("done", final_result, cost_usd, elapsed_ms)
+                yield (
+                    "error",
+                    "claude exited 0 but emitted no result line",
+                )
             else:
                 tail = bytes(stderr_bytes)[-_STDERR_TAIL:].decode(
                     "utf-8", errors="replace"
@@ -245,45 +247,25 @@ async def stream(prompt: str, cwd: Path) -> AsyncIterator[Event]:
                 )
                 yield ("error", tail or f"exit code {exit_code}")
 
-        except GeneratorExit:
-            # Caller called aclose() — kill subprocess, propagate (design §5).
-            await _terminate_and_reap(proc)
-            raise
-        except asyncio.CancelledError:
-            await _terminate_and_reap(proc)
-            raise
         finally:
-            # Reap child and stop stderr drain on every exit path. Semaphore
-            # releases via ``async with sem`` when this frame unwinds.
-            if proc.returncode is None:
-                try:
-                    proc.terminate()
-                except (ProcessLookupError, OSError):
-                    pass
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=_GRACE_SEC)
-                except (TimeoutError, Exception):
-                    try:
-                        proc.kill()
-                    except (ProcessLookupError, OSError):
-                        pass
-                    try:
-                        await asyncio.wait_for(proc.wait(), timeout=2.0)
-                    except Exception:
-                        pass
+            # Reap child and stop stderr drain on every exit path, including
+            # GeneratorExit and asyncio.CancelledError (which propagate after
+            # this block). Semaphore releases via ``async with sem`` when this
+            # frame unwinds.
+            await _terminate_and_reap(proc)
 
             if not stderr_task.done():
                 stderr_task.cancel()
             try:
                 await asyncio.wait_for(stderr_task, timeout=2.0)
-            except (TimeoutError, asyncio.CancelledError, Exception):
+            except (TimeoutError, asyncio.CancelledError):
                 pass
 
 
 async def _await_stderr(stderr_task: asyncio.Task[None]) -> None:
     """Wait (bounded) for the sidecar stderr drain to finish.
 
-    Swallows any exception/cancellation so stderr quirks cannot prevent the
+    Swallows timeouts/cancellations so stderr quirks cannot prevent the
     runner from emitting its final event.
     """
     if stderr_task.done():
@@ -294,9 +276,9 @@ async def _await_stderr(stderr_task: asyncio.Task[None]) -> None:
         stderr_task.cancel()
         try:
             await asyncio.wait_for(stderr_task, timeout=1.0)
-        except (TimeoutError, asyncio.CancelledError, Exception):
+        except (TimeoutError, asyncio.CancelledError):
             pass
-    except (asyncio.CancelledError, Exception):
+    except asyncio.CancelledError:
         pass
 
 
@@ -328,6 +310,6 @@ async def _terminate_and_reap(proc) -> bool:
 
     try:
         await asyncio.wait_for(proc.wait(), timeout=2.0)
-    except (TimeoutError, Exception) as exc:
+    except TimeoutError as exc:
         logger.debug("wait after kill failed: %s", exc)
     return True

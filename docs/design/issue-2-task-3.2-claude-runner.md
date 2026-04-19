@@ -16,8 +16,12 @@ claude -p <prompt> \
     --model <claude_model> \
     --allowed-tools Read,Glob,Grep \
     --permission-mode acceptEdits \
-    --cwd <cwd>
+    --add-dir <cwd>          # grants Read/Glob/Grep access to this dir
 ```
+
+The subprocess working directory is pinned via the ``cwd=`` kwarg of
+``asyncio.create_subprocess_exec`` (NOT via an argv flag — the real
+``claude`` CLI rejects ``--cwd`` as an unknown option).
 
 Parses stdout line-by-line, yielding typed events as they arrive. Enforces per-request timeout (`settings.claude_timeout_sec`) and a global concurrency cap (`settings.claude_concurrency`). Kills the child process cleanly on timeout, non-zero exit, or caller cancellation.
 
@@ -78,12 +82,13 @@ argv = [
     "--model", settings.claude_model,
     "--allowed-tools", "Read,Glob,Grep",
     "--permission-mode", "acceptEdits",
-    "--cwd", str(cwd),
+    "--add-dir", str(cwd),
 ]
 proc = await asyncio.create_subprocess_exec(
     *argv,
     stdout=asyncio.subprocess.PIPE,
     stderr=asyncio.subprocess.PIPE,
+    cwd=str(cwd),          # actual subprocess working directory
 )
 ```
 
@@ -92,7 +97,8 @@ Rationale:
 - List-form (`create_subprocess_exec`) makes shell injection impossible regardless of prompt content.
 - Prompt passed via `-p` CLI arg (not stdin) per spec §5.1.
 - `--allowed-tools Read,Glob,Grep` is mandated by HARNESS §3. No `Write`, `Edit`, or `Bash`. This MUST be covered by a test.
-- `--cwd` pins the subprocess working directory to the sandboxed per-request uploads dir so `Read`/`Glob` cannot escape (paired with Task 3.1's ULID-validated directory path).
+- `--add-dir <cwd>` grants the allow-listed tools (Read/Glob/Grep) access to the sandboxed per-request uploads dir. The real `claude` CLI does NOT expose a `--cwd` flag — passing one would crash with "unknown option".
+- The `cwd=str(cwd)` kwarg on `create_subprocess_exec` is where real sandboxing happens: the child process's working directory is pinned to the ULID-validated uploads dir (paired with Task 3.1). This prevents `Read`/`Glob` from escaping via relative paths even when the user-provided prompt embeds them.
 
 ---
 
@@ -174,7 +180,7 @@ def _get_sem() -> asyncio.Semaphore:
 | Field | Input | Processing | Output event |
 |---|---|---|---|
 | `prompt` | caller arg (str) | passed as `-p <value>` argv entry; logged as sha256 prefix only | — |
-| `cwd` | caller arg (Path) | `str(cwd)` passed as `--cwd` argv entry | — |
+| `cwd` | caller arg (Path) | `str(cwd)` passed as (a) `--add-dir` argv entry granting tool access and (b) `cwd=` kwarg to `create_subprocess_exec` pinning the subprocess working directory | — |
 | stdout JSON lines | child subprocess pipe | `json.loads` per line; dispatched on `type` | `delta` / `done` |
 | stderr | child subprocess pipe | captured in-memory, truncated to 1000 chars on non-zero exit | `error` |
 | `cost_usd` | `result` line `total_cost_usd` | float coerce, default 0.0 | `done` tuple[2] |
@@ -211,7 +217,7 @@ Mechanical mapping from sections above — every bullet below must have at least
 9. `test_stream_respects_concurrency_semaphore` — `claude_concurrency=2`; launch 3 streams; 3rd blocks on `acquire` until one finishes (§6).
 10. `test_command_includes_allowed_tools_read_glob_grep` — assert exact `--allowed-tools Read,Glob,Grep` argv slice present (HARNESS §3 enforcement).
 11. `test_command_uses_configured_model` — assert `--model` argv = `settings.claude_model` (§3).
-12. `test_command_uses_configured_cwd` — assert `--cwd` argv = `str(cwd)` (§3).
+12. `test_command_uses_configured_cwd` — assert `--add-dir` argv = `str(cwd)` AND that the `cwd=` kwarg on `create_subprocess_exec` equals `str(cwd)`. Also assert `--cwd` does NOT appear in argv (the real claude CLI rejects it). (§3)
 13. `test_subprocess_enoent_yields_error` — `create_subprocess_exec` raises `FileNotFoundError` → one `error` event with `"claude not found"` substring; generator returns normally, no raise (§5).
 14. `test_stream_does_not_deadlock_on_large_stderr` — sidecar stderr drain proven by feeding >64KB to mock stderr while a normal `done` flows on stdout.
 
@@ -236,7 +242,7 @@ All tests mock `asyncio.create_subprocess_exec` (via `monkeypatch`) with a fake 
 
 - HARNESS §3 enforced: `--allowed-tools Read,Glob,Grep`; no `Write`, `Edit`, or `Bash`. Test #10 is load-bearing.
 - Shell injection impossible: we use `create_subprocess_exec(argv-list)`, never `shell=True`. User prompt content is a single argv item.
-- `cwd` is a trusted caller-supplied path; upstream Task 3.1 guarantees it is an absolute, ULID-validated directory under `settings.upload_dir`. This module does not re-validate; boundary is documented.
+- `cwd` is a trusted caller-supplied path; upstream Task 3.1 guarantees it is an absolute, ULID-validated directory under `settings.upload_dir`. This module does not re-validate; boundary is documented. The sandbox is enforced on two axes: (a) the subprocess's actual working directory is set via the `cwd=` kwarg on `create_subprocess_exec` (so relative paths cannot escape via shell semantics), and (b) `--add-dir <cwd>` is the only directory the allow-listed Read/Glob/Grep tools are permitted to access. We deliberately do NOT use a `--cwd` argv flag — the real `claude` CLI has no such option and would error out immediately.
 - Prompt is NOT logged verbatim — only a sha256 prefix — to avoid PII leakage in log files.
 - stderr is truncated to the last 1000 chars before being placed in the `error` event payload (defence-in-depth against pathological error streams).
 

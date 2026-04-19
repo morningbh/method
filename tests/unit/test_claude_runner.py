@@ -19,12 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from pathlib import Path
 from typing import Any
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # FakeProcess / FakeReader infrastructure
@@ -137,7 +135,7 @@ class FakeProcess:
                 await asyncio.wait_for(
                     self._exit_event.wait(), timeout=self._wait_delay
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
         if self._returncode is None:
             self._returncode = self._exit
@@ -446,7 +444,6 @@ async def test_stream_timeout_kills_subprocess(
     # wait_delay > 10s and no stdout lines => blocks on readline + wait.
     proc = FakeProcess(stdout_lines=[], exit_code=0, wait_delay=10.0)
     # Patch stdout.readline to block until proc is terminated so we simulate a hang.
-    original_readline = proc.stdout.readline
 
     async def blocking_readline() -> bytes:
         # Wait until the proc is terminated (simulating hung subprocess).
@@ -512,8 +509,8 @@ async def test_stream_cancellation_kills_subprocess_cleanly(
 
     # Semaphore permit released: a subsequent stream must be able to acquire.
     # Set concurrency to 1 and launch another; it should not deadlock.
-    from app import config as config_mod
     import app.services.claude_runner as cr
+    from app import config as config_mod
 
     monkeypatch.setattr(config_mod.settings, "claude_concurrency", 1)
     monkeypatch.setattr(cr, "_CLAUDE_SEM", None, raising=False)
@@ -643,7 +640,6 @@ async def test_command_includes_allowed_tools_read_glob_grep(
         f"{argv_list[idx + 1]!r}, expected 'Read,Glob,Grep'"
     )
     # Also assert no forbidden tool names leak in.
-    joined = ",".join(str(a) for a in argv_list)
     for forbidden in ("Write", "Edit", "Bash"):
         # Match as a tool-list token, not a substring of unrelated args.
         assert forbidden not in argv_list[idx + 1].split(","), (
@@ -677,7 +673,12 @@ async def test_command_uses_configured_model(
 
 
 # ---------------------------------------------------------------------------
-# #12. --cwd argv matches str(cwd)
+# #12. cwd plumbing — --add-dir argv AND cwd kwarg both match str(cwd)
+#
+# The real claude CLI has NO --cwd flag; passing one would crash with "unknown
+# option". Subprocess CWD is pinned via the ``cwd=`` kwarg on
+# ``create_subprocess_exec``; tool-access to the sandbox is granted via
+# ``--add-dir`` (the actual CLI-recognised option).
 # ---------------------------------------------------------------------------
 
 
@@ -699,9 +700,26 @@ async def test_command_uses_configured_cwd(
     await _collect(stream("prompt", cwd))
 
     argv_list = list(spy.argv or ())
-    assert "--cwd" in argv_list
-    idx = argv_list.index("--cwd")
+
+    # --add-dir is the real CLI flag granting tool access to the sandbox.
+    assert "--add-dir" in argv_list, (
+        f"argv must include --add-dir for tool access: {argv_list}"
+    )
+    idx = argv_list.index("--add-dir")
     assert argv_list[idx + 1] == str(cwd)
+
+    # --cwd is NOT a real claude CLI option — passing it would crash in prod.
+    assert "--cwd" not in argv_list, (
+        f"--cwd is not a valid claude CLI flag; must not appear in argv: "
+        f"{argv_list}"
+    )
+
+    # Subprocess working directory is pinned via the cwd= kwarg (this is where
+    # real sandboxing happens).
+    assert spy.kwargs is not None
+    assert spy.kwargs.get("cwd") == str(cwd), (
+        f"cwd kwarg must equal str(cwd); got kwargs={spy.kwargs!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
