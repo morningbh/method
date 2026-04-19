@@ -1,48 +1,32 @@
 """Shared pytest fixtures."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
+import httpx
 import pytest
 import pytest_asyncio
 
 
-@pytest.fixture(autouse=True)
-def _fresh_db_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Give each test a unique SQLite file and reset any cached engine/settings.
-
-    We set DB_PATH in the environment *before* app modules are imported, and
-    we also clear any cached `app.config` / `app.db` / `app.main` modules so
-    the new DB_PATH takes effect.
-    """
-    db_file = tmp_path / "test.db"
-    monkeypatch.setenv("DB_PATH", str(db_file))
-
-    # Drop any cached app modules so the next import re-reads the env.
-    import sys
-
-    for name in list(sys.modules):
-        if name == "app" or name.startswith("app."):
-            sys.modules.pop(name, None)
-
-    return db_file
-
-
 @pytest_asyncio.fixture
-async def app_client(_fresh_db_path: Path):
-    """Yield an httpx.AsyncClient bound to the FastAPI app via ASGITransport."""
-    import httpx
+async def app_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Yield an httpx.AsyncClient bound to the FastAPI app with lifespan run."""
+    db_path = tmp_path / "test.sqlite"
+    monkeypatch.setenv("DB_PATH", str(db_path))
 
+    # Reset cached settings + engine so the tmp DB is used for this test.
+    from app import config as config_mod
+
+    config_mod.settings = config_mod.Settings()
+
+    from app import db as db_mod
+
+    await db_mod.reset_engine_for_tests()
+
+    # Import app AFTER env vars are set so any module-level config reads see them.
     from app.main import app
 
-    # Trigger lifespan (init_db) via LifespanManager-less manual call is
-    # unnecessary — httpx ASGITransport doesn't run lifespan by default, so we
-    # call init_db() directly to create tables.
-    from app.db import init_db
-
-    await init_db()
-
     transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        yield client
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            yield client
