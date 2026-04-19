@@ -70,6 +70,7 @@ async def stream(prompt: str, cwd: Path) -> AsyncIterator[Event]:
             _config.settings.claude_bin,
             "-p", prompt,
             "--output-format", "stream-json",
+            "--verbose",  # required by claude CLI when pairing --print with stream-json
             "--model", _config.settings.claude_model,
             "--allowed-tools", "Read,Glob,Grep",
             "--permission-mode", "acceptEdits",
