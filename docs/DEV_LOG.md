@@ -169,3 +169,35 @@
 ### Things user should know
 - Real `claude` CLI flags used: `-p`, `--output-format stream-json`, `--model`, `--allowed-tools`, `--permission-mode acceptEdits`, `--add-dir`
 - Subprocess working directory set via `cwd=` kwarg (asyncio.create_subprocess_exec)
+
+## 2026-04-19 — Session 1 continued: M3 Task 3.3 research routes + SSE + runner
+
+### Shipped
+- `feat/m3-research-routes` merged to `main`
+- `app/services/research_runner.py` — orchestration, pub/sub, Jinja prompt, two-session + rescue pattern
+- `app/routers/research.py` — POST, SSE stream, JSON, download endpoints
+- `app/templates/prompts/research.j2` — autoescape=off prompt template
+- `app/main.py` — research router included
+- 42 new tests (16 unit + 26 integration) — suite now 141 passing + 1 skipped
+
+### 10-step workflow
+- design-check iter 1 NEEDS_REVISION (6 BLOCKING: session scope, task exception callback, plan_write failure handling, top-level rescue, model field rationale, prompt-injection tests)
+- iter 2 PASS after applying 14 revisions
+- /tester wrote 40 tests → /test-quality-check FAIL (2 missing: design #32 download-404-failed, #39 claude_runner allowed_tools tripwire) → tester added them → 42 total RED
+- dev loop: first pass GREEN (141 passing). Required 3 test-infra tweaks: seeded_user `expunge` (SQLAlchemy async greenlet issue), tests #23 and #39 switched from asyncio.Event.wait to asyncio.sleep (httpx ASGITransport buffers SSE), 500ms subscriber-wait loop between Block A and claude stream (UX improvement for POST-then-connect flow)
+- /review APPROVED (0 Critical/Important, 3 Minor deferred)
+
+### Non-obvious decisions
+- Two-session pattern: Block A mark running (close session) → claude stream (no DB connection held) → Block B terminal write (fresh session) → rescue Block C (last-resort fresh session)
+- `_log_task_exception` callback attached to background tasks so they don't silently fail
+- Pub/sub: in-memory `dict[rid, list[asyncio.Queue]]` with 256 maxsize + silent drop on QueueFull (ground truth is DB)
+- Jinja2 autoescape=False for prompts (tests verify literal preservation of injection attempts)
+- Ownership enforced via single-query `WHERE id AND user_id` — no timing oracle
+- SSE framing: `event: <name>\ndata: <json>\n\n`, JSON body via `json.dumps(ensure_ascii=False)` so `\n` inside text is escaped
+- httpx ASGITransport can't truly stream SSE — buffers response entirely. M4/M5 with real HTTP server will verify streaming properly
+- Added `elapsed_ms: null` to M3 JSON body (design said SSE-only); harmless ahead-of-schedule
+
+### Things user should know
+- Test #32 renumbering: /tester initially wrote 40 tests but missed design #32 and #39. Added them as items 41 and 42. Full suite count 141 = 100 prior + 40 initial + 2 catch-up - 1 (one of the 40 was replaced). Actually 100 + 41 = 141. Verified.
+- Background task on server restart will leave running rows stuck. M5 should add a startup sweep.
+- `claude_runner.stream` mocked at `app.services.research_runner.stream` import seam. Tests never hit real claude.
