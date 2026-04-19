@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "method"
+version = "0.0.1"
+description = "Method — research planner web app"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Boyu Hu" },
+]
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy>=2",
+    "aiosqlite",
+    "pydantic-settings",
+    "jinja2",
+    "python-multipart",
+    "aiosmtplib",
+    "pdfplumber",
+    "python-docx",
+    "python-magic",
+    "httpx",
+    "ulid-py",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff",
+    "aiosmtpd",
+]
+
+[project.scripts]
+method = "app.main:run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+exclude = ["tests*", "docs*", "scripts*", "deploy*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+ignore = ["E501"]
