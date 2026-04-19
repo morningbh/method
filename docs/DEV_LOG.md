@@ -234,3 +234,53 @@
 
 ### Process lesson
 - /design-check caught the right things early; /tester needed no revision cycles. Writing the design doc exhaustively (field mapping, error table, files list) paid off.
+
+## 2026-04-19 — Session 1 Final: M5 Deploy + Web E2E
+
+### M5 Shipped
+- `feat/m5-deploy` merged to main — systemd units (`deploy/method.service`, `deploy/cloudflared.service`) + scripts (`scripts/{deploy,tunnel-url,setup-systemd}.sh`)
+- `feat/m5-web-e2e` merged to main — `tests/e2e/web/` with chromium runner + scenario doc + 4 auto scenarios
+- Public URL live: https://que-career-favour-mode.trycloudflare.com
+- BASE_URL in .env updated to tunnel URL
+- systemctl status: method active, cloudflared active, both persistent across reboot
+
+### End-to-end verification (via curl + Gmail MCP + chrome headless)
+1. GET /api/health → 200 OK
+2. GET /login → 200 OK
+3. POST /api/auth/request_code with admin email → {"status":"sent"}
+4. Gmail MCP search → login code email arrived from real Gmail SMTP
+5. POST /api/auth/verify_code with code → {"ok":true} + Set-Cookie method_session (HttpOnly, SameSite=Lax, not Secure pre-HTTPS-cert)
+6. GET / with cookie → 200 (workspace renders)
+7. chromium headless screenshots of /login desktop + mobile + /api/health + /history (unauthed redirect) → all > 3KB, captured
+
+### Design decisions locked in M5
+- Cloudflare quick-tunnel (not named tunnel) for MVP — URL changes on cloudflared restart; acceptable trade-off since method restarts don't affect tunnel (fixed Wants= vs Requires=)
+- BASE_URL auto-written by tunnel-url.sh helper from journalctl
+- Web e2e runner = chromium CLI + PNG size heuristic (≥ 3KB filters blank pages). Cookie injection for authed flows punts to CLI e2e (test_real_email_flow.py covers SMTP; research generation covered by test_real_claude_call.py)
+- Screenshots not committed to git (gitignored)
+
+### Final state
+- main commits since kickoff: 47 (TDD with per-task RED/GREEN/MERGE cadence)
+- tests: 167 unit+integration green, 2 e2e pass with RUN_E2E=1 (email + claude), 4 web e2e pass
+- open issues on GitHub: 4 (M2–M5 — all closed by this session's commits)
+- HARNESS constraints all honored: §1 non-empty error_message, §2 absolute paths, §3 claude --allowed-tools Read,Glob,Grep, §4 cookie flags, §5 e2e RUN_E2E gate
+
+### Critical catches during the session
+1. **M3 Task 3.2 /review caught `--cwd` hallucination** — claude CLI doesn't accept --cwd. Unit tests mocked subprocess, missed it. Fix: `--add-dir` + `cwd=` kwarg. LP L1 antidote.
+2. **Task 3.4 real claude e2e caught `--verbose` requirement** — stream-json needs --verbose. Would have crashed production on first request. Fix: argv update.
+3. **Task 3.3 /design-check caught session-held-across-claude-stream** — rewrote to two-session + rescue pattern.
+4. **Task 3.1 /test-quality-check caught vacuous blocking-test** — test_extraction_timeout was asserting ticks AFTER await (always 20). Rewrote to capture ticks during save + wall-time assertion.
+
+### Process lessons
+- `/design-check` provides strong a-priori value; typical 0-2 revision iterations
+- Real-infrastructure e2e tests (real SMTP, real claude CLI) catch class-of-bugs that mocked unit tests structurally cannot. Two out of four critical catches were e2e-only.
+- Subagent-driven workflow with mandatory /review gate caught one critical bug that every earlier gate missed (--cwd)
+- Design-doc-first approach (then test-first, then implementation) drastically reduced rework; zero tasks needed a full retry
+
+### Future work (not done this session)
+- Named Cloudflare tunnel so URL is stable (free account, just config)
+- Production `method.xvc.com` DNS setup
+- Server-restart recovery for rows stuck in status='running' (design Q1)
+- Per-user cost visibility in history (design Q6)
+- Dark mode, share-plan links, account settings — all YAGNI per spec §14
+- Web e2e: migrate to playwright so auth'd flows (scenario 4) are fully automated
