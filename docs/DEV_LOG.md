@@ -139,3 +139,33 @@
 ### Things to note
 - `_generate_fixtures.py` script documents `pip install --no-deps reportlab pypdf` for fixture regeneration
 - FastAPI import in services/ is borderline per boundary rule (HTTPException base for LimitExceededError); documented as intentional
+
+## 2026-04-19 — Session 1 continued: M3 Task 3.2 claude_runner
+
+### Shipped
+- `feat/m3-claude-runner` merged to `main`
+- `app/services/claude_runner.py` (~340 lines) — async subprocess wrapper, stream-json parser, sidecar stderr drain, SIGTERM/SIGKILL timeout, lazy semaphore, cancellation cleanup
+- 14 new unit tests — suite now 99 passed + 1 skipped
+
+### 10-step workflow
+- design-check iter 1 PASS (after 4 small edits: task number 3.5→3.4, stderr drain sidecar, semaphore race note, new test #14)
+- /tester 14 RED tests
+- /test-quality-check PASS (0 advisories)
+- dev loop: first pass 14 green, but /review caught a CRITICAL bug: argv contained `--cwd` which is NOT a real claude CLI flag. Textbook L1 failure: unit tests mocked create_subprocess_exec and missed it.
+- Fix pass: `--cwd <path>` → `--add-dir <path>` in argv + pass `cwd=str(cwd)` kwarg to create_subprocess_exec. Also cleaned up I1-I3 (dead try/except, redundant cleanup, silent empty-result).
+- /review v2: APPROVED
+- DEV_LOG
+
+### Critical lesson
+- The tester wrote tests from the design doc, which ALSO had `--cwd` — so tests passed while the code was broken. Tests-as-contract is valuable but has a hole when the design itself hallucinated a flag. Mitigation: the /review subagent spotted it by actually running `claude --help`. Going forward, consider adding to `/design-check` a "verify external CLI flags against live `--help`" rule.
+- Also updated upstream spec (`docs/superpowers/specs/2026-04-19-method-research-planner-design.md` §5.1) which had the same bug.
+
+### Non-obvious decisions
+- Sidecar stderr drain is a real task, awaited in finally (prevents pipe-full deadlock)
+- `exit_code == 0` with no result line now emits error (not silent empty done)
+- Grace period (5s) and timeout come from settings; both defined and tested
+- Prompt logged as sha256-truncated hex, never raw
+
+### Things user should know
+- Real `claude` CLI flags used: `-p`, `--output-format stream-json`, `--model`, `--allowed-tools`, `--permission-mode acceptEdits`, `--add-dir`
+- Subprocess working directory set via `cwd=` kwarg (asyncio.create_subprocess_exec)
