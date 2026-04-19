@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block topbar %}{% include "_topbar.html" %}{% endblock %}
+{% block content %}
+<noscript>
+  <p class="noscript">请启用 JavaScript 以使用 Method。</p>
+</noscript>
+<section class="workspace">
+  <h1>帮你设计研究计划</h1>
+  <form id="research-form" enctype="multipart/form-data">
+    <textarea id="question" name="question" data-autofocus required
+              placeholder="把研究问题写在这里..."></textarea>
+    <div id="drop-zone" class="drop-zone">
+      <span class="dz-desktop">拖拽上传资料，或 </span>
+      <button type="button" id="pick-files">选择文件</button>
+      <input id="file-input" type="file" name="files"
+             accept=".md,.txt,.pdf,.docx" multiple hidden>
+      <p class="hint">支持 .md / .txt / .pdf / .docx · 最多 20 个 · 单文件 &le; 30 MB</p>
+    </div>
+    <ul id="chips" class="chips"></ul>
+    <div id="submit-row">
+      <button type="submit" class="primary" id="submit-btn">生成研究方案</button>
+    </div>
+    <div id="submit-error" class="error-banner" hidden></div>
+  </form>
+</section>
+<script src="/static/app.js"></script>
+{% endblock %}

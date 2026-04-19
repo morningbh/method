@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{{ title|default("Method") }}</title>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+{% block topbar %}{% endblock %}
 <div id="flash"></div>
 <main id="content">{% block content %}{% endblock %}</main>
 </body>

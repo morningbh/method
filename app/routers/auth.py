@@ -253,19 +253,9 @@ async def login_page(request: Request) -> Response:
     )
 
 
-@router.get("/")
-async def root(
-    request: Request,
-    user: User | None = Depends(get_current_user),
-) -> Response:
-    if user is None:
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
-    templates = request.app.state.templates
-    return templates.TemplateResponse(
-        request,
-        "landing.html",
-        {"title": "Method", "user": user},
-    )
+# Note: ``GET /`` used to live here and render ``landing.html``. It moved to
+# ``app/routers/history.py::root`` in M4 (design §2.1) — the authed branch
+# now renders the workspace ``index.html``, unauthed redirects unchanged.
 
 
 # ---------------------------------------------------------------------------

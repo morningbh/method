@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.db import init_db
-from app.routers import admin, auth, health, research
+from app.routers import admin, auth, health, history, research
 
 _APP_DIR = Path(__file__).resolve().parent
 _TEMPLATE_DIR = _APP_DIR / "templates"
@@ -27,6 +27,10 @@ app = FastAPI(title="Method", version="0.0.1", lifespan=lifespan)
 app.state.templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
 app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 app.include_router(health.router)
+# history.router must come before auth.router so design §8 router-order note
+# holds; the two no longer collide (auth.root was removed) but explicit order
+# prevents future regressions.
+app.include_router(history.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
 app.include_router(research.router)

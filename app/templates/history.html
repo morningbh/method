@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block topbar %}{% include "_topbar.html" %}{% endblock %}
+{% block content %}
+<section class="history-list">
+  <h1>历史记录</h1>
+  {% if items %}
+  <ul class="cards">
+    {% for item in items %}
+    <li>
+      <a class="card" href="/history/{{ item.request_id }}">
+        <span class="status-dot status-{{ item.status }}">&#9679;</span>
+        <span class="question">{{ item.question[:80] }}{% if item.question|length > 80 %}…{% endif %}</span>
+        <span class="meta">{{ item.created_at_display }} · {{ item.n_files }} files · {{ item.cost_display }}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">还没有研究记录</p>
+  {% endif %}
+</section>
+<script src="/static/app.js"></script>
+{% endblock %}
