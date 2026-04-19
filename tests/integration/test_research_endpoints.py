@@ -1141,3 +1141,162 @@ async def test_claude_runner_error_propagates_to_research_error_message(
     assert row.error_message == claude_tail, (
         f"error_message did not round-trip verbatim; got {row.error_message!r}"
     )
+
+
+# ===========================================================================
+# #32 (design §11.2). Download while failed → 404
+# ===========================================================================
+
+
+async def test_get_research_download_returns_404_when_failed(
+    app_client, research_paths, auth_session, integration_db
+):
+    """Design §11.2 #32: GET /api/research/<id>/download on a failed row → 404.
+
+    A failed research request has ``plan_path=None`` and a non-empty
+    ``error_message``; there is no markdown to return, so the download
+    endpoint must 404 rather than 500 or serve a stale body.
+    """
+    from app.models import ResearchRequest
+
+    user, raw = await auth_session("dlfail@example.com")
+    rid = VALID_ULID_FIXTURE
+    _upload, plan_root = research_paths
+
+    # Seed a DONE row for the same user so we can prove the route exists
+    # (avoids vacuous 404 on missing route). Mirrors the pattern used by
+    # test_get_research_download_returns_404_when_pending (#29/#31).
+    done_rid = "01HXZK8D7Q3V0S9B4W2N6M5C7T"
+    done_plan = plan_root / f"{done_rid}.md"
+    done_plan.write_text("# a plan\n", encoding="utf-8")
+
+    integration_db.add(
+        ResearchRequest(
+            id=rid,
+            user_id=user.id,
+            question="Q?",
+            status="failed",
+            plan_path=None,
+            error_message="simulated failure",
+            model="claude-opus-4-7",
+            created_at=_utcnow_naive(),
+            completed_at=_utcnow_naive(),
+        )
+    )
+    integration_db.add(
+        ResearchRequest(
+            id=done_rid,
+            user_id=user.id,
+            question="Q?",
+            status="done",
+            plan_path=str(done_plan.resolve()),
+            error_message=None,
+            model="claude-opus-4-7",
+            created_at=_utcnow_naive(),
+            completed_at=_utcnow_naive(),
+        )
+    )
+    await integration_db.commit()
+
+    app_client.cookies.set("method_session", raw)
+    # Sanity: route exists — same user, done id → 200.
+    sanity = await app_client.get(f"/api/research/{done_rid}/download")
+    assert sanity.status_code == 200, (
+        f"route missing or misrouted (got {sanity.status_code}); "
+        f"cannot meaningfully assert 404 on failed rid"
+    )
+    # The actual assertion: failed row → 404.
+    resp = await app_client.get(f"/api/research/{rid}/download")
+    app_client.cookies.clear()
+    assert resp.status_code == 404
+
+
+# ===========================================================================
+# #39 (design §11.2). Cross-task tripwire — claude_runner argv still uses
+# ``--allowed-tools Read,Glob,Grep`` (HARNESS §3).
+#
+# NOTE: This test is expected to PASS immediately — it exists as a tripwire
+# so that any future drift in claude_runner's argv construction (e.g., a
+# refactor that accidentally adds ``Write``/``Edit``/``Bash`` to the allowed
+# tools) will fail this test in the research-routes suite even if the
+# claude_runner unit suite is removed or reshaped. Redundant with
+# tests/unit/test_claude_runner.py #10 by design (§13 reverse-scan).
+# ===========================================================================
+
+
+async def test_claude_runner_allowed_tools_unchanged(monkeypatch, tmp_path):
+    """Tripwire: HARNESS §3 requires --allowed-tools Read,Glob,Grep.
+
+    This test is expected to PASS immediately; it exists as a cross-task
+    tripwire for future regressions. Fires a fake subprocess, captures the
+    argv passed to ``asyncio.create_subprocess_exec``, and asserts that the
+    ``--allowed-tools`` value is exactly ``Read,Glob,Grep`` and contains no
+    ``Write``/``Edit``/``Bash`` tokens.
+    """
+    import app.services.claude_runner as cr
+
+    captured_argv: list = []
+
+    class _FakeReader:
+        def __init__(self):
+            self._eof = False
+
+        async def readline(self) -> bytes:
+            self._eof = True
+            return b""
+
+        async def read(self, n: int = -1) -> bytes:
+            self._eof = True
+            return b""
+
+        def at_eof(self) -> bool:
+            return self._eof
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = _FakeReader()
+            self.stderr = _FakeReader()
+            self.returncode = 0
+            self.pid = 99999
+
+        async def wait(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+    async def _fake_exec(*argv, **kwargs):
+        captured_argv.extend(argv)
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+
+    # Reset the module-level semaphore so this test sees a fresh one.
+    monkeypatch.setattr(cr, "_CLAUDE_SEM", None, raising=False)
+
+    # Drive the stream to completion (EOF immediately, exit code 0 but no
+    # result line — the runner will yield an error, which is fine; we only
+    # care about the argv that was captured).
+    agen = cr.stream("tripwire prompt", tmp_path)
+    try:
+        async for _ev in agen:
+            pass
+    except Exception:
+        pass
+
+    assert captured_argv, "create_subprocess_exec was never called"
+    assert "--allowed-tools" in captured_argv, (
+        f"argv missing --allowed-tools: {captured_argv!r}"
+    )
+    idx = captured_argv.index("--allowed-tools")
+    tools_value = captured_argv[idx + 1]
+    assert tools_value == "Read,Glob,Grep", (
+        f"HARNESS §3 tripwire: expected 'Read,Glob,Grep', got {tools_value!r}"
+    )
+    forbidden = {"Write", "Edit", "Bash"}
+    assert not forbidden.intersection(tools_value.split(",")), (
+        f"forbidden tool leaked into --allowed-tools: {tools_value!r}"
+    )
