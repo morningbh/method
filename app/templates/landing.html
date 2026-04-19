@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<section>
+  <h1>Method 研究计划</h1>
+  <p>已登录：{{ user.email }}</p>
+  <p>工作区将在 Task 3.3 上线。</p>
+  <form method="post" action="/api/auth/logout">
+    <button type="submit">退出登录</button>
+  </form>
+</section>
+{% endblock %}
