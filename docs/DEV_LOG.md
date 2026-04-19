@@ -112,3 +112,30 @@
 - `/design-check` passed iteration 1 this time (vs iteration 2 for Task 2.3). Improvement.
 - One round of dev loop, no hack-and-revert. Faster than Task 2.3 (which had the SQLAlchemy monkey-patch → revert cycle).
 - Test quality check caught zero issues; tester's single real bug (`await expire_all`) only surfaced during implementation. Suggests the rubric doesn't check for misuse of SQLAlchemy async API — worth adding to `docs/TEST_QUALITY_CHECKER_PROMPT.md` at project level.
+
+## 2026-04-19 — Session 1 continued: M3 Task 3.1 file_processor
+
+### Shipped
+- `feat/m3-file-processor` merged to `main`
+- `app/services/file_processor.py` (263 lines) — SavedFile, LimitExceededError, validate_upload_limits, save_and_extract, cleanup_request
+- `app/models.py` — added ResearchRequest, UploadedFile ORM + idx_requests_user_created
+- 6 binary fixtures in `tests/fixtures/` (samples + encrypted + empty PDFs)
+- 20 new tests (17 file_processor + 3 model) — suite now 85 passed + 1 skipped
+
+### 10-step workflow
+- preflight PASS (docs already in place from M2)
+- /design-check iter 1 NEEDS_REVISION (2 BLOCKING: datetime tz + request_id ULID contract), iter 2 PASS
+- /tester 20 RED tests
+- /test-quality-check FAIL on test #8 (extraction_timeout test didn't actually verify non-blocking — ticks counted post-completion instead of during). Fix pushed: ticker unbounded + tick count captured before cancel + wall-time assertion. Re-checked — now rigorously verifies non-blocking.
+- /review APPROVED (0 Critical/Important, 3 non-blocking suggestions)
+
+### Non-obvious decisions
+- ULID regex defense at save_and_extract + cleanup_request trust boundary — prevents path traversal via request_id
+- MIME sniff accepts `application/zip` for .docx (libmagic quirk)
+- Fixtures committed as binaries (reportlab + pypdf used once; not in deps)
+- `_MAGIC = magic.Magic(mime=True)` module-level singleton for perf
+- Test #8 rewritten with two invariants (ticks during save + wall-time) after /test-quality-check caught the vacuous-test trap — LP L1 lesson applied
+
+### Things to note
+- `_generate_fixtures.py` script documents `pip install --no-deps reportlab pypdf` for fixture regeneration
+- FastAPI import in services/ is borderline per boundary rule (HTTPException base for LimitExceededError); documented as intentional
