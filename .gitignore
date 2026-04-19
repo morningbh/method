@@ -12,3 +12,5 @@ node_modules/
 *.egg-info/
 dist/
 build/
+.env.bak
+*.bak

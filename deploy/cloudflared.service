@@ -1,0 +1,17 @@
+[Unit]
+Description=Method Cloudflare Tunnel
+After=network.target method.service
+Wants=method.service
+
+[Service]
+Type=simple
+User=ubuntu
+ExecStart=/usr/local/bin/cloudflared tunnel --url http://127.0.0.1:8001
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
