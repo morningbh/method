@@ -14,6 +14,9 @@ class Settings(BaseSettings):
 
     # Admin / identity
     admin_email: str
+    # Email domains whose new registrations auto-activate (comma-separated, lowercased).
+    # Example: "xvc.com,projectstar.ai"
+    auto_approved_domains: str = ""
 
     # SMTP
     smtp_host: str

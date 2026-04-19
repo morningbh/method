@@ -865,3 +865,88 @@ async def test_module_does_not_commit_caller_owns_transaction(
     assert db_session.in_transaction() or dirty_or_new, (
         "auth_flow must not commit — caller owns the transaction boundary"
     )
+
+
+# ===========================================================================
+# 24. request_login_code — email domain in AUTO_APPROVED_DOMAINS auto-activates
+# ===========================================================================
+
+
+@pytest_asyncio.fixture
+async def auto_approved_xvc(monkeypatch):
+    """Pin settings.auto_approved_domains to 'xvc.com,projectstar.ai' for the test."""
+    from app import config as config_mod
+
+    monkeypatch.setattr(
+        config_mod.settings, "auto_approved_domains", "xvc.com,projectstar.ai"
+    )
+
+
+async def test_request_login_code_xvc_domain_auto_activates(
+    db_session, mailer_mocks, admin_email, auto_approved_xvc
+):
+    from app.models import LoginCode, User
+    from app.services.auth_flow import request_login_code
+
+    result = await request_login_code(db_session, "alice@xvc.com")
+    await db_session.commit()
+
+    assert result == "sent"
+
+    user = (
+        await db_session.execute(select(User).where(User.email == "alice@xvc.com"))
+    ).scalar_one()
+    assert user.status == "active"
+    assert user.approved_at is not None
+
+    codes = (
+        await db_session.execute(select(LoginCode).where(LoginCode.user_id == user.id))
+    ).scalars().all()
+    assert len(codes) == 1
+
+    # Must NOT trigger the admin-approval mail.
+    assert mailer_mocks["send_approval_request"].calls == []
+    # Must send the user a login code.
+    assert len(mailer_mocks["send_login_code"].calls) == 1
+
+
+async def test_request_login_code_projectstar_domain_auto_activates(
+    db_session, mailer_mocks, admin_email, auto_approved_xvc
+):
+    from app.models import User
+    from app.services.auth_flow import request_login_code
+
+    # Case-insensitivity: domain written in mixed case.
+    result = await request_login_code(db_session, "bob@ProjectStar.AI")
+    await db_session.commit()
+
+    assert result == "sent"
+    user = (
+        await db_session.execute(
+            select(User).where(User.email == "bob@projectstar.ai")
+        )
+    ).scalar_one()
+    assert user.status == "active"
+    assert mailer_mocks["send_approval_request"].calls == []
+
+
+async def test_request_login_code_non_approved_domain_still_pending(
+    db_session, mailer_mocks, admin_email, auto_approved_xvc
+):
+    """Regression: only whitelisted domains auto-approve; everyone else stays pending."""
+    from app.models import User
+    from app.services.auth_flow import request_login_code
+
+    result = await request_login_code(db_session, "random@gmail.com")
+    await db_session.commit()
+
+    assert result == "pending"
+    user = (
+        await db_session.execute(
+            select(User).where(User.email == "random@gmail.com")
+        )
+    ).scalar_one()
+    assert user.status == "pending"
+    # Admin gets the approval request; user does NOT get a login code.
+    assert len(mailer_mocks["send_approval_request"].calls) == 1
+    assert mailer_mocks["send_login_code"].calls == []

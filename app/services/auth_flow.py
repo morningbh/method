@@ -121,6 +121,23 @@ def _normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
+def _auto_approved_domains() -> set[str]:
+    """Parse settings.auto_approved_domains into a lowercased set.
+
+    Read at call-time (not import-time) so tests can monkeypatch settings.
+    """
+    raw = (_config.settings.auto_approved_domains or "").strip()
+    return {p.strip().lower() for p in raw.split(",") if p.strip()}
+
+
+def _should_auto_activate(addr: str) -> bool:
+    """True if the address is admin OR in an auto-approved domain."""
+    if addr == _config.settings.admin_email.strip().lower():
+        return True
+    _, sep, domain = addr.partition("@")
+    return bool(sep) and domain in _auto_approved_domains()
+
+
 def _gen_login_code() -> str:
     """Return a 6-digit zero-padded numeric code (20 bits entropy)."""
     return f"{secrets.randbelow(10**6):06d}"
@@ -159,7 +176,6 @@ async def request_login_code(
         RateLimitError: active user asked for another code within 60s.
     """
     addr = _normalize_email(email)
-    admin = _config.settings.admin_email.strip().lower()
 
     # Look up existing user by normalised email.
     existing = (
@@ -167,8 +183,9 @@ async def request_login_code(
     ).scalar_one_or_none()
 
     if existing is None:
-        if addr == admin:
-            # Admin self-bootstrap: create active user + issue login code.
+        if _should_auto_activate(addr):
+            # Admin self-bootstrap OR auto-approved domain:
+            # create active user + issue login code.
             now = _utcnow()
             user = User(
                 email=addr,
@@ -211,7 +228,8 @@ async def request_login_code(
             addr,
             _hash_prefix(token_hash),
         )
-        await send_approval_request(admin, addr, approve_url)
+        admin_addr = _config.settings.admin_email.strip().lower()
+        await send_approval_request(admin_addr, addr, approve_url)
         return "pending"
 
     # Existing user branches.
