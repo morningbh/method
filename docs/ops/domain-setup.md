@@ -2,165 +2,212 @@
 
 **目标**：把临时的 `https://<random>.trycloudflare.com` 换成永久的 `https://method.xvc.com`。
 
-**当前状态**：
-- 域名 `xvc.com`：已在中国大陆 ICP 备案；DNS 解析在**阿里云**
-- 服务器：腾讯云，`method` + `cloudflared` 两个 systemd 服务都 active
-- 隧道模式：quick tunnel（每次重启换 URL，对磁链接邮件不友好）
-- 目标模式：**Cloudflare Named Tunnel**（永久 URL + 免费 HTTPS + 无需开端口）
+**当前条件**：
+- 域名 `xvc.com`：**已 ICP 备案**；DNS 解析在**阿里云**
+- 服务器：**腾讯云**（有公网 IP）；`method` systemd 服务监听 `127.0.0.1:8001`
+- 浏览器跑的 Cloudflare Free 套餐**不允许加子域名 zone**（已确认）
 
 ---
 
-## 核心方案：子域名委托（NS Delegation）
+## 最终方案：A 记录 + Nginx + Let's Encrypt
 
-**不动 `xvc.com` 的主域解析**。只在阿里云 DNS 里给 `method` 这个子域加两条 NS 记录，把它指到 Cloudflare。Cloudflare 只管 `method.xvc.com` 这一个子域名。
+**为什么不用 Cloudflare**：
+- 免费版不支持子域 zone，付费版 $200+/mo 不划算
+- 把整个 `xvc.com` 主域迁到 Cloudflare 风险大（邮件解析、其它子域都要动）
 
-| 受影响 | 不受影响 |
-|---|---|
-| ✓ `method.xvc.com` 解析切到 Cloudflare | ✗ `xvc.com` ICP 备案 |
-| ✓ 通过 Cloudflare Tunnel 暴露服务 | ✗ `xvc.com` 主域 A/CNAME/MX 记录 |
-| | ✗ 其它子域（`www.xvc.com`, `mail.xvc.com` 等） |
-
-**合规性**：服务器仍在腾讯云（已备案主体），源站不变；只是对外入口走 Cloudflare。ICP 备案的主体关系与子域单独托管的 DNS 不冲突。
-
-**性能提示**：Cloudflare 免费版走**全球 Edge**，国内用户主要命中香港/新加坡节点。速度比阿里云直连略慢（30-80ms vs 10-20ms），但对研究方案这类 2-4 分钟生成的异步业务完全够用。如果以后要国内优化，可升级 Cloudflare China Network（约 $200/月，走京东云国内节点）。
+**为什么这条路顺**：
+- `xvc.com` 备案已做 → 国内走 80/443 端口合规
+- 阿里云加一条 A 记录，5 分钟生效
+- Let's Encrypt 免费证书，certbot 自动续期
+- 腾讯云 + 阿里云都是你已有的体系，不增加第三方依赖
 
 ---
 
 ## 全流程（3 大步，~15 分钟）
 
-1. **Cloudflare 侧**：开账号 → 加 `method.xvc.com` 子域 zone → 拿到 2 个 Cloudflare nameservers
-2. **阿里云 DNS 侧**：在 `xvc.com` zone 里加 `method` 的 NS 委托记录
-3. **服务器侧**：创建 named tunnel → 配 ingress → 改 systemd → 改 `.env` → 重启
+1. **阿里云 DNS**：加一条 `method` 的 A 记录指向腾讯云公网 IP
+2. **腾讯云安全组**：开放 80 / 443 端口
+3. **服务器**：装 Nginx 反向代理 → certbot 申请 SSL → 关掉 cloudflared → 改 `.env` → 重启
 
 ---
 
-## 步骤 1：Cloudflare 侧设置
+## 前置：拿腾讯云公网 IP
 
-### 1.1 注册/登录 Cloudflare
-打开 https://dash.cloudflare.com，没账号就用邮箱注册一个，免费。
+两个办法二选一：
 
-### 1.2 添加子域 zone
-- 点 `Add a site`
-- 输入 **`method.xvc.com`**（注意不是 `xvc.com`，是带子域的完整名字）
-- 选 **Free plan**
-- 它会提示 DNS 检测，**跳过/Confirm** 即可（因为子域名还没有解析）
-- 完成后，Cloudflare 会给你 2 个 nameservers，形如：
-  ```
-  xxx.ns.cloudflare.com
-  yyy.ns.cloudflare.com
-  ```
-  **把这两个记下**，步骤 2 要用。
+**A. 腾讯云控制台**：云服务器 → 实例 → 找到这台 → 复制"公网 IP"
 
-> 如果页面提示 "This zone already exists" 或要求加整个 `xvc.com`，说明你误把主域加进去了。删除重来，添加时精确输入 `method.xvc.com`。Cloudflare 在 Free plan 支持子域名 zone。
+**B. 服务器上命令**：
+```bash
+ssh ubuntu@<服务器IP>
+curl -4 ifconfig.me
+```
+输出形如 `123.45.67.89` 的就是公网 IP。
+
+**记下这个 IP**，下面反复用，我用 `<TENCENT_IP>` 代指。
 
 ---
 
-## 步骤 2：阿里云 DNS 侧加 NS 委托
+## 步骤 1：阿里云 DNS 加 A 记录
 
-登录阿里云控制台 → **云解析 DNS** → 进 `xvc.com` 域名的解析页。
-
-加两条记录：
+阿里云控制台 → **云解析 DNS** → 进 `xvc.com` 解析页 → 添加记录：
 
 | 主机记录 | 记录类型 | 解析线路 | 记录值 | TTL |
 |---|---|---|---|---|
-| `method` | **NS** | 默认 | `xxx.ns.cloudflare.com.`（步骤 1.2 那两个的第一个，末尾带点） | 600 |
-| `method` | **NS** | 默认 | `yyy.ns.cloudflare.com.`（第二个，末尾带点） | 600 |
+| `method` | **A** | 默认 | `<TENCENT_IP>` | 600 |
 
-> 末尾的 `.` 有些阿里云界面自动补；如果不补就报错，手动加上。
+保存。
 
-等 5-10 分钟 DNS 生效。
-
-验证（在服务器上或本地）：
+**验证**（本地或服务器上）：
 ```bash
-dig NS method.xvc.com +short
+dig A method.xvc.com +short
 ```
-应返回你在 Cloudflare 面板看到的那俩 NS。如果还是旧的或空的，就再等一下。
+应返回 `<TENCENT_IP>`。没返回就等 5 分钟再试。
 
 ---
 
-## 步骤 3：服务器上配置 tunnel
+## 步骤 2：腾讯云安全组开 80 / 443
 
-### 3.1 登录 cloudflared
+腾讯云控制台 → **云服务器** → 找到实例 → 点**安全组** → 编辑规则 → 入站规则 → 添加：
+
+| 协议 | 端口 | 源 | 策略 | 备注 |
+|---|---|---|---|---|
+| TCP | 80 | 0.0.0.0/0 | 允许 | Let's Encrypt HTTP-01 |
+| TCP | 443 | 0.0.0.0/0 | 允许 | HTTPS |
+
+保存。
+
+**验证**（本地）：
+```bash
+nc -zv <TENCENT_IP> 80
+nc -zv <TENCENT_IP> 443
+```
+两条都 `succeeded` 即 OK（此时还没服务监听，连接通表示安全组放行到主机；后面装 nginx 会有服务接收）。
+
+---
+
+## 步骤 3：服务器侧配置（我可以全程接管）
+
+### 3.1 装 Nginx
 
 ```bash
-ssh ubuntu@<服务器IP>
-cloudflared tunnel login
+ssh ubuntu@<TENCENT_IP>
+sudo apt update && sudo apt install -y nginx
+sudo systemctl status nginx --no-pager | head -5
 ```
 
-终端打出一个 URL → 复制到本地浏览器打开 → Cloudflare 页面选 **`method.xvc.com`** → 授权。
+应该 `active (running)`。
 
-服务器终端看到 `You have successfully logged in.` 即成功。凭据在 `~/.cloudflared/cert.pem`。
-
-### 3.2 创建 named tunnel
+### 3.2 写 Nginx 反向代理配置
 
 ```bash
-cloudflared tunnel create method
-```
+sudo tee /etc/nginx/sites-available/method.xvc.com <<'EOF'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name method.xvc.com;
 
-输出形如：
-```
-Tunnel credentials written to /home/ubuntu/.cloudflared/<tunnel-id>.json
-Created tunnel method with id <tunnel-id>
-```
+    # Let's Encrypt HTTP-01 挑战
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
 
-**记下 `<tunnel-id>`**（36 字符 UUID）。
-
-### 3.3 路由 DNS
-
-```bash
-cloudflared tunnel route dns method method.xvc.com
-```
-
-这一步会自动在 Cloudflare 的 `method.xvc.com` zone 里加一条 `CNAME → <tunnel-id>.cfargotunnel.com`。
-
-**在 Cloudflare 面板 → method.xvc.com → DNS 里确认这条记录存在（橙色云 = proxied）**。
-
-### 3.4 写 tunnel 配置文件
-
-```bash
-cat > ~/.cloudflared/config.yml <<'EOF'
-tunnel: <tunnel-id>             # 替换成 3.2 的 UUID
-credentials-file: /home/ubuntu/.cloudflared/<tunnel-id>.json
-
-ingress:
-  - hostname: method.xvc.com
-    service: http://localhost:8001
-  - service: http_status:404
+    # 其它都 301 到 HTTPS（certbot 装完会自动加这段；先放占位）
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
 EOF
+sudo ln -sf /etc/nginx/sites-available/method.xvc.com /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
-**把 `<tunnel-id>` 替换成 3.2 拿到的 UUID**（两处）。
-
-### 3.5 前台测一下
+### 3.3 申请 SSL 证书
 
 ```bash
-cloudflared tunnel --config ~/.cloudflared/config.yml run method
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d method.xvc.com --non-interactive --agree-tos -m morningwilliam@gmail.com --redirect
 ```
 
-看到 `Registered tunnel connection` × 4 条 + 没 error 即 OK。
+certbot 会自动：
+- 拿到 Let's Encrypt 证书（有效期 90 天）
+- 改 `/etc/nginx/sites-available/method.xvc.com` 加 `listen 443 ssl`
+- 加 HTTP→HTTPS 301 跳转
+- 装一个 cron / systemd timer 自动续期
 
-**新开一个终端**（或本地）跑：
+验证：
 ```bash
-curl -fsS https://method.xvc.com/api/health
+curl -sfS -I https://method.xvc.com | head -3
+```
+应返回 `HTTP/2 200` 或 `HTTP/1.1 200` 加 `server: nginx/...`。
+
+### 3.4 加反向代理（指向 Method 应用）
+
+编辑配置（certbot 改过，现在再补反代）：
+
+```bash
+sudo tee /etc/nginx/sites-available/method.xvc.com <<'EOF'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name method.xvc.com;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name method.xvc.com;
+
+    ssl_certificate     /etc/letsencrypt/live/method.xvc.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/method.xvc.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+
+    # 上传最大 120 MB（对应 spec：20 个 × 30MB = 600MB 理论上限，100MB 总额；留 120 给余量）
+    client_max_body_size 120M;
+
+    # SSE 超时（claude 生成 3-10 分钟）
+    proxy_read_timeout 700s;
+    proxy_send_timeout 700s;
+    proxy_buffering off;          # SSE 必须关
+    proxy_cache off;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+
+    location / {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+验证：
+```bash
+curl -sfS https://method.xvc.com/api/health
 ```
 预期：`{"ok":true,"version":"0.0.1"}`
 
-回到 tunnel 前台 **Ctrl+C 停掉**。
-
-### 3.6 切 systemd unit
+### 3.5 关掉 cloudflared（不再用快速隧道）
 
 ```bash
-sudo sed -i 's|ExecStart=.*|ExecStart=/usr/local/bin/cloudflared tunnel --config /home/ubuntu/.cloudflared/config.yml run method|' /etc/systemd/system/cloudflared.service
-
-sudo systemctl daemon-reload
-sudo systemctl restart cloudflared
-sleep 3
-systemctl status cloudflared --no-pager | head -15
+sudo systemctl stop cloudflared
+sudo systemctl disable cloudflared
 ```
 
-状态应是 `active (running)`，日志里有 `Registered tunnel connection`。
-
-### 3.7 更新 `.env` + 重启 method
+### 3.6 改 `.env` + 重启 method
 
 ```bash
 sed -i 's|^BASE_URL=.*|BASE_URL=https://method.xvc.com|' /home/ubuntu/method/.env
@@ -169,76 +216,71 @@ sleep 2
 curl -sfS https://method.xvc.com/api/health
 ```
 
-预期：`{"ok":true,"version":"0.0.1"}`
-
 ---
 
 ## 验收
 
-- [ ] `dig NS method.xvc.com` 返回 Cloudflare 的 NS（NS 委托生效）
+- [ ] `dig A method.xvc.com` 返回 `<TENCENT_IP>`
 - [ ] `https://method.xvc.com` 浏览器打开 → 跳 `/login`
-- [ ] 登录页 UI 正常（cream 背景 + tangerine 按钮）
+- [ ] 证书有效（地址栏锁图标），颁发者 `Let's Encrypt`
+- [ ] HTTP 自动 301 跳到 HTTPS（`curl -I http://method.xvc.com`）
 - [ ] 邮箱 + 验证码登录，进工作台
 - [ ] 提一个研究问题，历史页能看完整结果
 - [ ] 审批邮件里链接是 `https://method.xvc.com/admin/approve?token=...`
-- [ ] 重启整机 `sudo reboot`，起来后 URL 不变、服务自动恢复
-- [ ] `xvc.com` 的其它子域名（比如 `www.xvc.com` 如果有）**不受影响**
+- [ ] 重启整机 `sudo reboot`，起来后服务自动恢复
+- [ ] 证书自动续期（`sudo certbot renew --dry-run` 应该 success）
 
 ---
 
-## 回滚
-
-### 快速回到 quick tunnel（服务器侧）
+## 回滚到 Cloudflare Quick Tunnel
 
 ```bash
-sudo sed -i 's|ExecStart=.*|ExecStart=/usr/local/bin/cloudflared tunnel --url http://127.0.0.1:8001|' /etc/systemd/system/cloudflared.service
-sudo systemctl daemon-reload
-sudo systemctl restart cloudflared
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
 sleep 5
-journalctl -u cloudflared --since "1 minute ago" | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1
-# 把这个 URL 写回 .env BASE_URL，重启 method
+URL=$(journalctl -u cloudflared --since "1 minute ago" | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1)
+sed -i "s|^BASE_URL=.*|BASE_URL=$URL|" /home/ubuntu/method/.env
+sudo systemctl restart method
+echo "URL: $URL"
 ```
 
-### 完全放弃 method.xvc.com
-
-- 阿里云 DNS：删掉刚加的两条 NS 记录
-- Cloudflare：删掉 `method.xvc.com` zone（不收费不用删，留着也没影响）
-- 服务器：按上面的快速回滚
+Nginx 继续占用 80/443 也没问题——tunnel 不走这两个端口。
 
 ---
 
 ## 常见问题
 
-**Q: Cloudflare 能不能直接 CNAME 到 `<tunnel-id>.cfargotunnel.com`，不做 NS 委托？**
-A: 不行。Cloudflare Tunnel 的 TLS 证书颁发依赖它对该域名的 DNS 控制权。不做 NS 委托，访问会报证书不匹配。
+**Q: `certbot --nginx` 报 `Timeout during connect (likely firewall problem)`？**
+A: 腾讯云安全组没放 80 端口。回步骤 2 确认。certbot 用 HTTP-01 挑战，必须 80 能从外网访问。
 
-**Q: NS 委托后，阿里云上 `xvc.com` 主域的记录还能改吗？**
-A: 能，完全不受影响。NS 委托只把 `method.xvc.com` 这一个子域的解析交给 Cloudflare；其它记录（`xvc.com` A 记录、`www.xvc.com`、MX 等）都还在阿里云。
+**Q: 浏览器访问提示"不安全"或"证书无效"？**
+A: 3 个可能：
+1. 证书还没申请成功（重跑 3.3）
+2. DNS 还没生效（等 10 分钟，`dig` 再验）
+3. 浏览器缓存了旧的（无痕窗口再试）
 
-**Q: ICP 备案会因此失效吗？**
-A: 不会。备案挂在主体 + 域名本身，不关心 DNS 提供商。你只是换了 `method.xvc.com` 这一个子域的解析服务商。
+**Q: SSE 10 分钟后断连，"生成中"卡住？**
+A: 我已在步骤 3.4 把 `proxy_read_timeout` 设 `700s` 且 `proxy_buffering off`。如果还断，可能是腾讯云网络层的 idle 超时（罕见），联系腾讯云工单。
 
-**Q: `cloudflared tunnel route dns` 报 `zone not found`？**
-A: 步骤 1.2 或 2 没做完。检查：
-- Cloudflare 里确认 `method.xvc.com` zone 状态是 Active（不是 Pending Nameserver Update）
-- `dig NS method.xvc.com` 确认返回 Cloudflare 的 NS
+**Q: 上传大文件（接近 100MB）报 413？**
+A: `client_max_body_size` 已设 120M，够用。如果仍报 413，先 `sudo nginx -t` 检查配置是否生效，再 `sudo systemctl reload nginx`。
 
-**Q: 访问报 502 / 530？**
-A: 检查 `method.service` 是否 active（`systemctl is-active method`）。它监听 `127.0.0.1:8001`。
+**Q: Let's Encrypt 每 3 个月过期？**
+A: certbot 装了自动续期 timer：`sudo systemctl list-timers | grep certbot`。测试续期流程：`sudo certbot renew --dry-run`。
 
-**Q: 国内访问慢怎么办？**
-A: 免费版 Cloudflare 走境外 Edge，典型延迟 30-80ms，首字节 <500ms。如果慢到影响体验：
-- Cloudflare → `method.xvc.com` → Speed → 开 Auto Minify + Brotli
-- 继续慢就考虑 Cloudflare Pro/Business 套 China Network，或者改用腾讯云 EdgeOne（同服务商生态更一致）
+**Q: 以后要加备用域名 / 别名怎么办？**
+A: 阿里云加第二条 A 记录 → `sudo certbot --nginx -d method.xvc.com -d new.xvc.com --expand`，一条命令扩证书。
 
-**Q: 让 Claude 来做？**
-A: 步骤 1（Cloudflare 网页操作）和步骤 2（阿里云 DNS）必须你本人点，之后步骤 3 全程我可以接管。告诉我 "前两步我做完了，你来跑步骤 3"。
+**Q: 国内访问慢？**
+A: 腾讯云服务器在国内、证书是 Let's Encrypt、路径最短。没啥可优化。如果实测慢，先 `traceroute` 看是哪一跳。
+
+**Q: Claude 你来做？**
+A: 步骤 1（阿里云 DNS）+ 步骤 2（腾讯云安全组）必须你本人在控制台点。做完告诉我"前两步好了，`<TENCENT_IP>` 是 xxx"，我跑完步骤 3 全部。
 
 ---
 
 ## 事后可选
 
-- Cloudflare 免费版自带基础 WAF / DDoS 保护
-- 启用 `Always Use HTTPS`（Cloudflare → SSL/TLS → Edge Certificates）
-- 开 `method.xvc.com` 的访问分析（Cloudflare Analytics → Traffic）
-- 监控：`/api/health` 接 UptimeRobot，5 分钟一探
+- 加监控：`/api/health` 接 UptimeRobot（免费，5 分钟一探）
+- 加 Nginx 访问日志分析（`/var/log/nginx/access.log`）
+- Nginx 前面套 Tencent EdgeOne 的免费版做 CDN（国内访问加速），后面再考虑
