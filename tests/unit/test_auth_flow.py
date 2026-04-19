@@ -15,12 +15,11 @@ and the no-commit/caller-owns-transaction invariant).
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,7 +28,7 @@ from sqlalchemy import select
 
 def _utcnow_naive() -> datetime:
     """Mirror the module-internal naive-UTC policy (design §7)."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _sha256(raw: str) -> str:

@@ -24,11 +24,9 @@ Coverage binding (design §9 / dispatcher audit):
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
-import pytest
 from sqlalchemy import select
-
 
 # ---------------------------------------------------------------------------
 # Local helpers
@@ -36,7 +34,7 @@ from sqlalchemy import select
 
 
 def _utcnow_naive() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _sha256(raw: str) -> str:
@@ -414,6 +412,8 @@ async def test_get_admin_approve_valid_token_activates_user_and_renders_approved
 
     user = await seeded_user("tobeapproved@example.com", status="pending")
     _tok, raw = await seed_approval_token(user.id, raw_token="valid-raw-token")
+    user_id = user.id
+    tok_id = _tok.id
 
     resp = await app_client.get("/admin/approve", params={"token": raw})
     assert resp.status_code == 200
@@ -422,16 +422,16 @@ async def test_get_admin_approve_valid_token_activates_user_and_renders_approved
     assert "tobeapproved@example.com" in resp.text
 
     # DB reflects activation.
-    await integration_db.expire_all()
+    integration_db.expire_all()
     refreshed_user = (
-        await integration_db.execute(select(User).where(User.id == user.id))
+        await integration_db.execute(select(User).where(User.id == user_id))
     ).scalar_one()
     assert refreshed_user.status == "active"
     assert refreshed_user.approved_at is not None
 
     refreshed_tok = (
         await integration_db.execute(
-            select(ApprovalToken).where(ApprovalToken.id == _tok.id)
+            select(ApprovalToken).where(ApprovalToken.id == tok_id)
         )
     ).scalar_one()
     assert refreshed_tok.used_at is not None
@@ -455,15 +455,16 @@ async def test_get_admin_approve_expired_token_renders_error(
     _tok, raw = await seed_approval_token(
         user.id, raw_token="expired-raw-token", expires_at=past
     )
+    user_id = user.id
 
     resp = await app_client.get("/admin/approve", params={"token": raw})
     # Per design §2.4: HTML success-code even on error — it's a human-facing page.
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
     # User should NOT be activated.
-    await integration_db.expire_all()
+    integration_db.expire_all()
     refreshed = (
-        await integration_db.execute(select(User).where(User.id == user.id))
+        await integration_db.execute(select(User).where(User.id == user_id))
     ).scalar_one()
     assert refreshed.status == "pending"
     # Activation notice NOT sent.
@@ -484,14 +485,15 @@ async def test_get_admin_approve_used_token_renders_error(
     _tok, raw = await seed_approval_token(
         user.id, raw_token="used-raw-token", used_at=_utcnow_naive()
     )
+    user_id = user.id
 
     resp = await app_client.get("/admin/approve", params={"token": raw})
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
 
-    await integration_db.expire_all()
+    integration_db.expire_all()
     refreshed = (
-        await integration_db.execute(select(User).where(User.id == user.id))
+        await integration_db.execute(select(User).where(User.id == user_id))
     ).scalar_one()
     assert refreshed.status == "pending"
     assert mailer_mocks["send_activation_notice"].calls == []
@@ -617,7 +619,7 @@ async def test_full_flow_new_user_to_session(
     assert "e2e@example.com" in r5.text
 
     # sanity: user is now active in DB
-    await integration_db.expire_all()
+    integration_db.expire_all()
     u = (
         await integration_db.execute(
             select(User).where(User.email == "e2e@example.com")
