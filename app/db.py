@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -24,6 +25,21 @@ _engine: AsyncEngine | None = None
 _sessionmaker: async_sessionmaker[AsyncSession] | None = None
 
 
+def _install_fk_pragma_listener(engine: AsyncEngine) -> None:
+    """Enable SQLite FK enforcement on every new connection.
+
+    SQLite defaults to foreign_keys=OFF. We enable it globally at the engine
+    level so every session gets the pragma automatically — auth code (M2) and
+    downstream code relies on FK enforcement (RESTRICT, CASCADE, etc.).
+    """
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragma(dbapi_conn, _connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+
 def get_engine() -> AsyncEngine:
     """Return the cached async engine, creating it on first use."""
     global _engine
@@ -34,6 +50,7 @@ def get_engine() -> AsyncEngine:
             echo=False,
             future=True,
         )
+        _install_fk_pragma_listener(_engine)
     return _engine
 
 

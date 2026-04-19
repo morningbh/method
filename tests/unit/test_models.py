@@ -192,17 +192,13 @@ async def test_approval_token_crud(db_session):
 # RESTRICT). MVP doesn't delete users, so we only need to document the
 # behavior: deleting a referenced user while child rows exist must raise.
 #
-# NOTE: SQLite does NOT enforce foreign keys by default. Production code
-# will turn them on via PRAGMA; here we just validate the semantic chosen
-# by the schema (no CASCADE declared).
+# FK enforcement is now enabled globally at the engine level (see app/db.py
+# _install_fk_pragma_listener). Tests no longer need to issue the PRAGMA.
 # ---------------------------------------------------------------------------
 
 
 async def test_cascade_or_no_cascade(db_session):
     from app.models import LoginCode, User
-
-    # Turn on FK enforcement for this connection (SQLite default is off).
-    await db_session.execute(text("PRAGMA foreign_keys = ON"))
 
     now = datetime(2026, 1, 2, 3, 4, 5)
     user = User(email="restrict@example.com", status="active", created_at=now, approved_at=now)
@@ -222,8 +218,32 @@ async def test_cascade_or_no_cascade(db_session):
     await db_session.commit()
 
     # With no ON DELETE CASCADE in the schema, deleting a parent while
-    # children exist must raise an IntegrityError.
+    # children exist must raise an IntegrityError — proving RESTRICT semantics
+    # AND that the engine-level FK PRAGMA is active.
     await db_session.delete(user)
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+async def test_fk_enforcement_enabled(db_session):
+    """Inserting a LoginCode with a non-existent user_id must raise IntegrityError.
+
+    Proves FK enforcement is ON at the engine level without any test-level
+    PRAGMA — if the engine listener regresses, this test fails immediately.
+    """
+    from app.models import LoginCode
+
+    now = datetime(2026, 1, 2, 3, 4, 5)
+    db_session.add(
+        LoginCode(
+            user_id=999999,  # no such user
+            code_hash="d" * 64,
+            salt="y" * 16,
+            expires_at=now + timedelta(minutes=10),
+            created_at=now,
+        )
+    )
     with pytest.raises(IntegrityError):
         await db_session.commit()
     await db_session.rollback()
