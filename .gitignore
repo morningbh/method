@@ -14,3 +14,4 @@ dist/
 build/
 .env.bak
 *.bak
+tests/e2e/web/screenshots/
