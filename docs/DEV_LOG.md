@@ -284,3 +284,81 @@
 - Per-user cost visibility in history (design Q6)
 - Dark mode, share-plan links, account settings — all YAGNI per spec §14
 - Web e2e: migrate to playwright so auth'd flows (scenario 4) are fully automated
+
+---
+
+## 2026-04-19 — Session 1 Addendum: post-ship polish + production domain
+
+### Changes after first user test
+- **UI → claude.ai aesthetic** (main `1c87e1d`)
+  - `app/static/style.css` rewritten: cream bg `#FAF9F5`, tangerine accent `#C96442`, warm text `#141413`, system font stack
+  - 16px base, 1.65 line-height; cards 16px radius + soft warm shadows; markdown prose styling (H1/H2/H3 hierarchy, code blocks, inline code, blockquotes, tables)
+  - Mobile: 768px breakpoint, sticky-bottom submit, truncated email in topbar, font-size ≥16px on inputs (iOS anti-zoom), pulse animation with `prefers-reduced-motion` respected
+  - `login.html`, `approved.html`, `approval_error.html` restyled
+- **Prompt hardened** (`app/templates/prompts/research.j2`, main `262dac3`)
+  - 3 hard requirements: Chinese-only (no English prefaces), no meta-narration ("Using research-method-designer..." forbidden), mobile-friendly formatting (tables only for 3+ comparisons max 3 cols, short paragraphs, H1-H3 only)
+- **Production domain `method.xvc.com`** (main `f935af1`) — PIVOTED AWAY FROM CLOUDFLARE
+  - Reason: CF Free plan no longer supports subdomain-only zones ($200/mo for subdomain setup); moving entire `xvc.com` to CF was too risky
+  - New stack: Aliyun DNS A record → Tencent Cloud public IP `129.226.93.22` → Nginx → Let's Encrypt
+  - Nginx config at `/etc/nginx/sites-available/method.xvc.com` (server-only, not in repo). Key: `proxy_buffering off` + `proxy_read_timeout 700s` for SSE + Claude's 3-10 min generation; `client_max_body_size 120M`; HTTP/2 on 443; auto 301 from 80; TLS 1.2+1.3
+  - Let's Encrypt cert `Apr 19 – Jul 18 2026`, `certbot.timer` auto-renewal
+  - `cloudflared.service` stopped + disabled (not deleted — emergency rollback)
+  - `.env` `BASE_URL=https://method.xvc.com`
+  - Coexists with existing `7x24bot.com` nginx site (untouched)
+  - Full setup doc: `docs/ops/domain-setup.md` + Feishu `https://www.feishu.cn/docx/RAGQdGMyfoyZN5xj1i9cQOzwnmh`
+- **Auto-approved domains** (main `c1fe2ab`)
+  - New config `AUTO_APPROVED_DOMAINS` (comma-separated, case-insensitive). Current: `xvc.com,projectstar.ai`
+  - `_should_auto_activate(addr)` in `auth_flow.py` treats whitelisted-domain addresses same as admin: status=active + login code issued immediately, skipping approval email
+  - 3 new unit tests — total now **170 passed + 2 skipped**
+
+### Production state snapshot (end of session)
+- **URL**: https://method.xvc.com (HTTPS, valid cert, HTTP 301)
+- **systemd active**: `method.service` (uvicorn 127.0.0.1:8001), `nginx.service` (reverse proxy), `certbot.timer`
+- **systemd disabled**: `cloudflared.service` (stopped, kept on disk for rollback)
+- **GitHub**: https://github.com/morningbh/method — main at `c1fe2ab`
+- **Tests**: 170 passed + 2 skipped (e2e RUN_E2E=1 gated)
+- **Claude 7-day rate limit**: ~0.77 utilization around deploy — monitor; Opus research calls eat budget fast
+- **End-to-end verified live** (2026-04-19 evening): admin auto-activation → login code email → verify → 30-day cookie → workspace → submitted research (霸王茶姬, 3m54s, 23KB markdown, 10 sections). All worked. UI showed "生成中" most of the time because Opus buffers tokens.
+
+### Known limitations / tech-debt
+- **Opus not truly streaming**: SSE deltas sparse; polling fallback (implemented) handles this but live-stream UX is misleading. Not broken — model limitation.
+- **18 pre-existing ruff errors** in test files (unused imports, import order). Non-blocking. Bundle into next cleanup.
+- **Stuck `running` rows on server restart** — design §15 Q1. Startup sweep deferred.
+- **`cost_usd` not persisted** — `GET /api/research/<id>` returns `null`. Add column + terminal-write update when wanted.
+- **`7x24bot.com` shares the server** — no isolation; runaway on either service affects the other.
+
+### Key file locations (for context restart)
+- Design spec: `docs/superpowers/specs/2026-04-19-method-research-planner-design.md`
+- Per-task designs: `docs/design/issue-*-task-*.md`
+- Ops doc (domain setup): `docs/ops/domain-setup.md`
+- Feishu docs (审批链): spec v1.1, 7 task design docs, 1 domain doc — all linked in GitHub wiki-style via DEV_LOG entries above
+- Running config: `/home/ubuntu/method/.env` (gitignored, has real SMTP password + session secret)
+- Server-only nginx: `/etc/nginx/sites-available/method.xvc.com`
+- systemd units: `/etc/systemd/system/method.service`, `cloudflared.service`
+- TLS cert: `/etc/letsencrypt/live/method.xvc.com/`
+
+### Process lessons (full session)
+1. **/design-check iterations are cheap; bugs they catch are not.** 2+ iters on every M3 task caught real blocking issues each time.
+2. **Real-infra e2e tests catch a class of bug mock tests structurally cannot.** `--cwd` unknown flag + `--verbose` required for stream-json — both only surfaced via real `claude` subprocess.
+3. **"Design doc first" was load-bearing.** Zero rework on tester→implementer handoffs.
+4. **The /review gate caught what 4 earlier gates missed** (`--cwd`). Never skip review.
+5. **User-authorized "reviews don't block" pragmatism works.** Artifacts still generated; execution never stalls. 48 commits in one session with full workflow traces.
+
+### Commit summary since main deploy (after `5afe643`)
+- `9dcbc22` — chore(log): M4 completion notes
+- `0c78e6a` — chore(log): Session 1 final
+- `1c87e1d` — Merge feat/m5-ui-polish (claude.ai design)
+- `262dac3` — feat(ui): stricter prompt for Chinese-only, no preamble, mobile-friendly
+- `44008a9` / `5b3e3da` — docs(ops): domain setup guide iterations
+- `f935af1` — docs(ops): pivot domain guide to Nginx + LE
+- Domain deployment: (server-side config only, not in git)
+- `c1fe2ab` — feat(auth): auto-approve registrations from whitelisted email domains
+
+### If you're Claude picking this up in a fresh session
+1. Read `docs/HARNESS.md` + `docs/AGENT_CONTEXT.md` first
+2. State of everything: `systemctl status method nginx certbot.timer`
+3. Live site: https://method.xvc.com
+4. Current `.env` has real secrets; don't commit
+5. Test suite runs via `.venv/bin/python -m pytest tests/` (or use `/run-tests` skill)
+6. When user wants a feature: follow 10-step per global CLAUDE.md; Feishu docs are post-hoc artifacts, not blocking gates
+7. `xvc.com` domain DNS is on Aliyun; server is Tencent Cloud; ICP 已备案
