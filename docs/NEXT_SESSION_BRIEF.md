@@ -1,57 +1,131 @@
-# Next Session Brief — 2026-04-20 暂停点
+# Next Session Brief — 2026-04-20 Session 3 暂停点
 
-> 你是主 agent，只读这份 brief + `docs/INDEX.md` + `docs/TODO.md`。**不要读设计文档正文、代码、测试文件**。需要看就派 sub-agent。参见 `~/.claude/CLAUDE.md` 的 "Main Agent Role — Dispatcher Only" 五条硬规则 (R1–R5)。
+> 你是主 agent，R1-R5 硬规则生效（`~/.claude/CLAUDE.md` + `~/.claude/rules/`）。只读这份 brief + `docs/INDEX.md` + `docs/TODO.md` + `docs/DEV_LOG.md` 尾部。**不读代码 / 设计文档正文 / 测试文件**。需要就派 sub-agent。
+
+---
 
 ## 你在哪
 
-- **cwd**: `/home/ubuntu/method-dev/`
-- **branch**: `feat/issue-4-comments`
-- **last commit**: `docs: checkpoint session 2 — INDEX.md, DEV_LOG entry, TODO refresh`
-- **feature**: Issue #4 功能 B（选文评论 + AI 回复），Step 7 dev loop 中
-- **test status**（上次停之前）: 40/45 passing；5 个 failing 的 fix 已写代码**未验证**
+- **cwd**: 按惯例 `/home/ubuntu/method` 或 `/home/ubuntu/method-dev`；**编辑只在 method-dev**（memory 里有记 `project_env_split.md`）
+- **prod status**: 已上线 feature B MVP-1，commit `e441fae`，`https://method.xvc.com/api/health = 200`，prod schema 含 `comments` 表
+- **branch**: `main`（干净，上次 merge 是 `e441fae`）
+- **uncommitted working tree**（这次 handover 故意留着让下个 session 决定：） 
+  ```
+  ?? .claude/                                         (project-local skill dir)
+  ?? docs/runs/20260420-195611-smoke-dev-featureB.md  (dev e2e smoke 报告)
+  ?? scripts/deploy.py                                (draft deploy script, 未冒烟)
+  M  docs/DEV_LOG.md                                  (Session 3 entry)
+  M  docs/TODO.md                                     (Section F 新开 + Section E 勾选 MVP-1)
+  M  docs/NEXT_SESSION_BRIEF.md                       (本 brief)
+  ```
+- **dev `.env` 本地修改**（gitignored，不会推）: `SMTP_FROM_NAME=Method DEV`（原来是带方括号的 `Method [DEV]`，让 `email.utils.parseaddr` 解析失败）
+- **其他 infra 改动（全局，不在 git）**:
+  - `~/.claude/CLAUDE.md` 瘦身到 70 行
+  - `~/.claude/rules/` 新建（INDEX + 8 rule files）
+  - `~/.claude/skills/design-check/SKILL.md` 加了 Category 14（用户可见文案 BLOCKING）
+
+---
 
 ## 第一步
 
-让 `/run-tests` 跑这两个文件：
+**先 commit handover** —— 把上面列的 4 个未 track 文件 + 3 个改动文件做一个干净的 WIP commit。命令可以直接跑（用户 Session 3 授权了此次 handover 的 commit 范围）：
+
+```bash
+cd /home/ubuntu/method-dev
+git add .claude/ scripts/deploy.py \
+        docs/DEV_LOG.md docs/TODO.md \
+        docs/NEXT_SESSION_BRIEF.md \
+        docs/runs/20260420-195611-smoke-dev-featureB.md
+git commit -m "chore(infra): /deploy-prod skill draft + Session 3 handover
+
+- New .claude/skills/deploy-prod/ (project-local contract)
+- New scripts/deploy.py (4-phase deterministic deploy, NOT YET SMOKE-TESTED)
+- DEV_LOG Session 3 entry (deploy retrospective + infra refactor)
+- TODO Section F (F1-F9 deploy infra backlog)
+- NEXT_SESSION_BRIEF refreshed for pickup
+
+Draft; Phase A dry-run is first task next session (F1).
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+```
+
+（如果要分多次 commit 可以，但上面是最省事的一口吃法。）
+
+---
+
+## 接下来的工作（从 `docs/TODO.md` Section F 抄出来，按优先级）
+
+### F1 — `scripts/deploy.py --dry-run` 冒烟（今天头等事）
 
 ```
-tests/unit/test_comment_runner.py
-tests/integration/test_comment_endpoints.py
+cd /home/ubuntu/method-dev
+.venv/bin/python scripts/deploy.py --dry-run --skip-human-smoke --yes
 ```
 
-期望：**45/45 PASS**（理由：5 个 fix 都落盘了）。
+`--skip-human-smoke` 是因为 F1 只是验证 Phase A 管线，不是真上线；`--dry-run` 就不会进 Phase B/C。期望：
+- `/home/ubuntu/backups/<ts>-deploy-<sha>/` 本地生成，含 `code/` `db/` `env/` `uploads/` `plans/`
+- DB `PRAGMA integrity_check = ok`；行数对齐
+- rclone 成功传到 `gdrive:backups/method/<ts>-deploy-<sha>/`
+- 报告写到 `docs/runs/<ts>-deploy-*.md`
 
-## 如果 45/45 PASS
+有 bug 就改 `scripts/deploy.py`，直到跑通。bug 可能点：
 
-继续走项目级 10 步流程（Step 5 跳过，`docs/HARNESS.md` 有调整说明）：
+1. pytest.main 返回非 0（deploy.py 把测试当 gate 但我们这次已经知道 246/248 PASS，所以应该绿；可能因为 import path 问题要调整）
+2. rclone 到 `gdrive:backups/method/` 首次可能要先 `rclone mkdir gdrive:backups/method`
+3. `sudo journalctl` 在 phase C 需要免密——这个 dry-run 不会触发，phase B/C 后面才验
 
-1. `/run-tests` 跑全项目回归 — 确认没动到别的测试
-2. `/review #B` — Step 8 代码评审（sub-agent，不要自己评）
-3. 根据 review 结果修 FAIL 点（若有）
-4. DEV_LOG 里补 Session 2 的最终提交摘要（Step 9）
-5. Merge `feat/issue-4-comments` → `main`
-6. `./scripts/promote-to-prod.sh` 先 dry-run，看 diff → `--apply` 推到生产
-7. 重启生产 `sudo systemctl restart method.service`，health check
-8. Feishu bot 通知用户：功能上线
+### F2 — 写 `/backup-restore-drill` skill + `scripts/restore_drill.py`
 
-## 如果还有 failing
+目录：`.claude/skills/backup-restore-drill/SKILL.md` + `scripts/restore_drill.py`。
 
-看 `docs/TODO.md` 的"当前进度（Session 2 暂停点）"段落，里面列了 5 个 failing 的具体 fix 意图。如果 fix 本身不够，调整实现或测试代码。**不要在主 agent 里直接写实现**：大块改动派 sub-agent。
+设计要点：
+- 输入：`--source gdrive` 或 `--source local`，默认 `gdrive`
+- 动作：
+  1. `rclone lsl gdrive:backups/method/` 取最新一份
+  2. 下载到 `/tmp/restore-drill-<ts>/`
+  3. 起独立 uvicorn（随机端口如 9999）指向备份的 sqlite
+  4. `curl /api/health` + 1 个读 API（譬如 `/api/history` 如果有 cookie 就跳）
+  5. SIGTERM + 清理 `/tmp/`
+- 输出：`docs/runs/<ts>-restore-drill.md`，退出 0/1
+- 失败通知：内置 Feishu bot（用户聊天 ID `ou_d9e4f77e8e63ddf2e32677fb72b1435b`，或走 `/feishu` skill 脚本化）
 
-## 硬约束重申（R1–R5，来自 `~/.claude/CLAUDE.md`）
+### F3 — systemd timer
 
-- 读：`INDEX.md` / `TODO.md` / `HARNESS.md` 短文 / `DEV_LOG.md` 尾部 / 本 brief
-- 不读：设计文档正文、`app/**/*.py`、测试文件、模板、静态资源
-- 所有 sub-agent 用 skill 启动（`/tester` / `/review` / `/run-tests` / `/design-check` 等）
-- 主 agent 的 sub-agent 启动消息：1-3 行，只说"哪个 skill + 参数 + 为什么"，不贴 prompt 正文
-- sub-agent 结果落文件（让 skill 决定路径），主 agent 只看 `{VERDICT, ≤200 字摘要, 报告文件路径}`
-- 没对应 skill 的任务 → 停下，提示用户创建 skill
+周一 03:00 CST 跑 drill；位置 `/etc/systemd/system/method-restore-drill.{service,timer}`（需要 sudo 装）。Template 见 `method-dev.service` 对照。
 
-## 已知 skill 缺口（有精力再做）
+### F4 — Issue #5 前端 UX 错误文案
 
-- **`/implement-from-tests`**（Step 7 dev loop）：吃 test 文件列表 + design doc，产出最小实现让 RED → GREEN，输出到文件。上次是主 agent 自己写的实现 → 上下文爆了。**如果上面第一步 GREEN 了就跳过这条**；若要继续别的 feature 时再补。
+按照 `~/.claude/skills/design-check/SKILL.md` 的 **Category 14** 走完整 10 步流程：
+
+- Step 2a：设计稿里必须有"错误码 → 中文 copy"映射表（grep 出所有 `{"error": "..."}` 后端返回点作为覆盖基线，至少 `rate_limit` / `bad_origin` / `invalid_or_expired` / `body_invalid` / `anchor_text_invalid` / `anchor_context_too_long` / 5xx / 网络异常 / 上传失败）
+- 设计定：后端加 `message` 字段 还是 前端字典 —— 推荐后端加（错误码和文案同源，前端 dumb render）
+- Step 2b 飞书审一下映射表是否每条文案都能自洽
+
+---
+
+## 硬约束（简版重申，细则在 `~/.claude/rules/`）
+
+- **R1-R5 / `rules/main-agent-role.md`**：只读 INDEX；sub-agent 写文件；skill 是契约
+- **`rules/deploy-discipline.md`**：部署必经 4 阶段，Phase A 必须备份 + 验证 + 异地 + 脚本化；不允许主 agent 临时思考部署步骤
+- **`rules/confirmation-policy.md`**：读文件不问；改非系统文件备份后直接改；不可逆系统操作先确认
+- **`rules/design-discussion-style.md`**：每轮 ≤ 3 个问题；多选题 A/B/C；长设计走飞书
+
+---
+
+## Kickoff prompt for new session
+
+（把下面这条贴进新的 Claude Code 会话，复用今天这种"极简入口 + brief-driven"的模式）：
+
+```
+读 /home/ubuntu/method-dev/docs/NEXT_SESSION_BRIEF.md，然后按它说的走。
+```
+
+（主 agent 读到这里就知道：先 commit handover，然后 F1 dry-run，然后 F2 写 drill skill。如果你想跳过 F1 直接进别的任务，在 kickoff 里加一句例如 "跳过 F1 直接做 F4"。）
+
+---
 
 ## 联系 / 通知
 
-- 发给用户的状态用 `/feishu` skill（bot 身份）发 `ou_d9e4f77e8e63ddf2e32677fb72b1435b`
-- 测试邮件只发 `h@xvc.com` / `morningwilliam@gmail.com`，永远不碰真实用户
+- 状态更新发飞书给用户：`/feishu` skill，chat id `ou_d9e4f77e8e63ddf2e32677fb72b1435b`
+- 测试邮件：`bhocbot@gmail.com`（agent 自己可读，见 memory `reference_test_email_bhocbot.md`）或 `h@xvc.com` / `morningwilliam@gmail.com`（用户自己的收件箱）
+- **永远不要**把测试邮件发给真实用户

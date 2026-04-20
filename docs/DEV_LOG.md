@@ -439,4 +439,58 @@ Picked up from `docs/NEXT_SESSION_BRIEF.md` on branch `feat/issue-4-comments`. F
 - **Skill prompts are the contract.** `/review` skill carries the full per-file checklist + design-completeness checks (items 13–15) inline; main agent's spawn message stayed at the 1-3 line discipline.
 - **Two sub-agent reports point at design completeness PASS** — that was the load-bearing risk after the LP #21 lesson and Method's HARNESS §1/§3 constraints. Confirmed clean.
 
+---
+
+## Session 3 — 2026-04-20 (deploy + infra retrospective)
+
+Same day as Session 2 wrap; this sitting promoted feature B to prod, hit several gaps, then pivoted into fixing the process/infrastructure that allowed those gaps.
+
+### What shipped
+
+- **Feature B (选文评论 + AI 回复) to prod**: merged `feat/issue-4-comments` → `main` (`e441fae`) and ran `scripts/promote-to-prod.sh --apply`. Prod healthy (`https://method.xvc.com/api/health = 200`); `/home/ubuntu/method/data/method.sqlite` auto-created the `comments` table on startup (lucky — see `init_db` gotcha below). `/tmp/method-prod-backup-1776688495` is the pre-deploy snapshot.
+- **Dev `.env` fix** (uncommitted, local only): `SMTP_FROM_NAME=Method [DEV]` → `Method DEV`. RFC 5322 treats `[]` as specials; `email.utils.parseaddr()` dropped sender to `"Method"` alone → Resend 501 "Bad sender address syntax" → `/api/auth/request_code` returned `mail_send_failed`. Brackets gone, dev SMTP works.
+
+### Gaps caught (and what we did)
+
+1. **Human-smoke gate was not enforced before deploy.** I asked A/B/C options and "push to prod now" was listed as B — user picked B assuming code was verified, but the only e2e verification was a sub-agent smoke on dev, not the user's own browser test. Corrective process work below in F-section of TODO.
+2. **`init_db` + `CREATE TABLE IF NOT EXISTS` blind spot**: if a prod DB already existed before feature-B code was deployed, startup would NOT create the new `comments` table (schema-evolution miss). This time prod's DB happened to create cleanly — next schema change is where it'd bite. → codified as a BLOCKING phase-C check in `deploy-discipline.md` (prod schema ⊇ dev schema).
+3. **UX error copy**: frontend renders `alert("发送失败：" + body.error)` for `rate_limit` / `bad_origin` / `invalid_code` / `body_invalid` / `invalid_or_expired` — raw API codes leak to user-visible text. `/design-check` v1 had no category for user-facing copy. → **added Category 14 — User-Facing Copy (BLOCKING)** to `~/.claude/skills/design-check/SKILL.md`. Frontend fix itself deferred to Issue #5.
+4. **Deploy was improvised, not scripted.** Decided to codify the entire deploy into a skill + deterministic Python script so the next shipment does not depend on LLM reasoning.
+5. **Backup only covered code.** `promote-to-prod.sh` excludes `data/` + `.env*`. No off-site copy. No verification. Fixed-forward design: Phase A of new `/deploy-prod` skill covers code + DB (`sqlite3 .backup`) + `.env*` + uploads/plans with a full verify pass + gdrive upload.
+
+### Architectural shifts this sitting
+
+- **Global vs project split**: global `~/.claude/CLAUDE.md` now holds **principles only** (≤ 70 lines). Principle bodies extracted to `~/.claude/rules/` (9 files, index at `rules/INDEX.md`). Skills + scripts stay **project-local** at `$PROJECT/.claude/skills/` and `$PROJECT/scripts/` — no more hardcoding project paths into global skills.
+- **Memory vs skill**: workflow lessons (design rules, review rules, test rules) go into the relevant skill, NOT into project memory. Memory is reserved for user/project/preference context. Recorded as feedback memory `feedback_lessons_into_skills.md`.
+- **Cron vs skill**: periodic jobs (backup-restore drill, log rotation) run via classic cron/systemd timer — **not** via `/schedule`-triggered Claude. LLM-in-loop only for human-interactive or interpretation-heavy tasks.
+
+### Files created / edited
+
+- `~/.claude/CLAUDE.md` — rewritten, 188 → 70 lines (pure index)
+- `~/.claude/rules/INDEX.md` + 8 rule files (main-agent-role, development-workflow, sub-agent-rules, design-discussion-style, confirmation-policy, code-safety-constraints, integration-path-discipline, deploy-discipline)
+- `~/.claude/skills/design-check/SKILL.md` — added Category 14
+- `/home/ubuntu/method-dev/.claude/skills/deploy-prod/SKILL.md` — project-local skill contract
+- `/home/ubuntu/method-dev/scripts/deploy.py` — draft deterministic deploy script (Phase A backup+verify, B deploy, C verify-live, D report); **NOT YET SMOKE-TESTED** — first task next session is `--dry-run`
+- `/home/ubuntu/method-dev/docs/runs/20260420-195611-smoke-dev-featureB.md` — e2e smoke of dev (6/6 PASS)
+- Project memory: `reference_test_email_bhocbot.md` (agent's own Gmail test inbox) and `feedback_lessons_into_skills.md` (meta-rule)
+- Deleted memory: `feedback_user_facing_error_copy.md` (rule moved into /design-check skill instead)
+
+### Lessons codified this sitting
+
+- **L-S3.1: Deploy must be scripted, not reasoned.** Embodied in `/deploy-prod` skill + `scripts/deploy.py`. Main agent forbidden from improvising phases.
+- **L-S3.2: Backups without restore drills are belief.** Drill skill + weekly timer required (not yet built — F2/F3 in TODO).
+- **L-S3.3: User-visible text is design scope.** Any design that lists error codes MUST list the user-facing copy for each. `/design-check` Category 14 enforces.
+- **L-S3.4: Lessons attach to skills, not memory.** Memory is context; skills are contracts; only the latter shape future behavior deterministically.
+- **L-S3.5: Global config = principles only; project-local = mechanics.** Global skill with hardcoded project paths is anti-pattern.
+
+### Uncommitted at session end
+
+```
+?? .claude/                                             (project-local skill dir)
+?? docs/runs/20260420-195611-smoke-dev-featureB.md      (dev e2e smoke report)
+?? scripts/deploy.py                                     (draft deploy script)
+```
+
+Plus edits to `docs/DEV_LOG.md` (this section), `docs/TODO.md`, `docs/NEXT_SESSION_BRIEF.md`. Left uncommitted by design so the next session owns the decision.
+
 Backups: `/tmp/method-backup-issue4-1776681529/`, `/tmp/method-backup-big-1776645971/`, `/tmp/method-backup-mode-1776607554/`, `/tmp/method-backup-delete-1776614218/`

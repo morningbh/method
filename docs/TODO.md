@@ -70,23 +70,14 @@ Audit context in chat history 2026-04-20. Current state: 8 users, 14 research re
 - **B-Q8 模型**：**系统默认 Opus**（评论是 skill 进化燃料，不降级 Haiku；保留 `CLAUDE_COMMENT_MODEL` env 逃生门）
 - **B-Q9 注销数据**：**软删 30 天可恢复**（联动 A8；合规硬要求时再改硬删）
 
-### 当前进度（Session 2，2026-04-20 暂停点）
+### 当前进度（Session 3，2026-04-20 — MVP-1 已上线）
 
-**Branch**: `feat/issue-4-comments` on `/home/ubuntu/method-dev/`
-**状态**: Step 7 dev loop 进行中，40/45 测试通过。最近 commit: "WIP: feature B dev loop — 40/45 tests green, 5 failing in progress"。
+- **MVP-1 DONE**: merged `feat/issue-4-comments` → `main` (`e441fae`) + deployed via `scripts/promote-to-prod.sh --apply`
+- 45/45 feature tests PASS；246/248 full regression PASS（2 个 E2E gated）；`/review` 12 PASS / 0 FAIL
+- 已收到的真实用户反馈：错误文案（`rate_limit` / `invalid_or_expired`）裸出给用户是 UX bug —— 进 Issue #5（F4）
+- **Pre-deploy 备份**: `/tmp/method-prod-backup-1776688495`（`/tmp` 重启会丢；之后改走新 `/deploy-prod` skill 持久备份）
 
-**5 个 failing tests 的 fix 已写但未验证**（见 DEV_LOG session 2 详细列表）：
-1-2. POST 长度校验改为 400（manual），待验
-3-4. DELETE 测试 `uc_id = uc.id` / `ai_id = ai.id` 在 `expire_all()` 前捕获，待验
-5. `history_detail.html` class 修正 + `data-markdown-source` 由 router 传入，待验
-
-**下次 session 在 `/home/ubuntu/method-dev/` 继续**：
-
-1. `/run-tests tests/unit/test_comment_runner.py tests/integration/test_comment_endpoints.py` — 应该 45/45 PASS
-2. 若通过，`/run-tests` 跑全项目回归
-3. `/review #B` 代码评审（Step 8）
-4. DEV_LOG 补最终提交摘要（Step 9）
-5. Merge 回 `main`；`./scripts/promote-to-prod.sh --apply` 上线
+MVP-2 / MVP-3 仍在下方 backlog。
 
 ### MVP backlog
 
@@ -150,6 +141,33 @@ Audit context in chat history 2026-04-20. Current state: 8 users, 14 research re
 
 ---
 
+## F. 部署流程与备份基础设施（Session 3 新开；优先于新功能）
+
+Session 3 2026-04-20 定了"部署确定性化 + 备份完备性"的方向，draft 已出，待验证 + 补齐。
+
+### 🔴 P0 — 下个 session 先做
+
+- [ ] **F1. `scripts/deploy.py --dry-run` 冒烟**：dev 上跑 Phase A（备份 + 验证 + gdrive 上传），不动 prod；验证备份目录结构、DB 行数对齐、rclone 到 `gdrive:backups/method/` 成功；生成 `docs/runs/<ts>-deploy-*.md` 报告。若有 bug 修完再往下走。
+- [ ] **F2. 写 `/backup-restore-drill` skill + `scripts/restore_drill.py`**：
+  - 输入：gdrive 路径（默认取最新）
+  - 动作：下载 → 解压到沙箱目录 → 起独立 uvicorn 端口 → curl `/api/health` + 一个 GET 接口 → 清理
+  - 输出：`docs/runs/<ts>-restore-drill.md`；退出 0/1；失败通过 Feishu bot 通知
+- [ ] **F3. systemd timer 周一 03:00 CST 跑 drill**：unit 文件 `method-restore-drill.{service,timer}`，`systemctl --user enable` 或 root；失败通知走 F2 脚本内置的 Feishu 调用（`/feishu` skill 脚本化版）
+- [ ] **F4. Issue #5 前端 UX 错误文案映射**：`app/static/app.js` 至少 3 处 `alert("X：" + body.error)` 裸拼接（`request_code` / `verify_code` / `submitResearch`），按 `/design-check` 新 Category 14 的规范先出设计稿（错误码 → 中文 copy 表），再走 10 步。涉及 error code 清单：`rate_limit` / `bad_origin` / `invalid_or_expired` / `body_invalid` / `anchor_text_invalid` / `anchor_context_too_long` / 5xx 兜底 / 网络异常 / 上传校验等。
+- [ ] **F5. 第一次用 `/deploy-prod` skill 做真实发布**：（dog-fooding）下一次 prod 更新（可能是 F4 的 UX 修），完整走 skill → script 路径，验证人工门 + schema containment + CDN 鲜度 + journal 扫描 4 道检查都生效。旧 `promote-to-prod.sh` 保留为脚本内部调用，不再由主 agent 直接调。
+
+### 🟡 P1
+
+- [ ] **F6. 把 `~/.claude/` 的 CLAUDE.md + rules/ + skills/ 纳入 dotfiles git repo**。机器迁移 / 多机同步 / 回滚都方便；单独 repo，不混进项目 repo。
+- [ ] **F7. 审`/tester` / `/review` / `/test-quality-check` / `/design-check` / `/run-tests` 这 5 个 sub-agent skill 的 "sub-agent 输出落盘" 合规度**：R4 说 sub-agent 必须写文件 + 回 ≤ 200 字摘要，目前至少 `/run-tests` 还在往主 agent 回全量 pytest 输出。逐一审，不达标就改 skill。
+
+### 🟢 P2
+
+- [ ] **F8. Deploy 预览环境**（非 prod 非 dev 的第三个环境 staging）：本来 dev 既当开发又当 QA，prod 出事只能回滚。staging 单独一份完整 prod 拷贝（含真实数据快照），`/deploy-prod` 可指定目标环境。
+- [ ] **F9. Schema migration 机制**：当前 `init_db` 只 `CREATE TABLE IF NOT EXISTS`；新增列 / 改表结构需要显式 migration（Alembic 或手写 SQL），`/deploy-prod` Phase A 运行前跑 dry-run migration check。TODO D-Q1 的上级。
+
+---
+
 ## E. 已完成的功能（reference，别再讨论）
 
 - 扫描 PDF fix（原 kind=failed 改为 pdf_scan）
@@ -159,6 +177,8 @@ Audit context in chat history 2026-04-20. Current state: 8 users, 14 research re
 - 登录双提交 race 修复（按钮 disabled 到请求完成）
 - Prompt 模板加 4-6 条"用户友好"规则（禁 Type A/B、禁学术黑话、省略问题类型分类章节）
 - service 重启流程（检查 in-flight → `sudo systemctl restart method.service`）
+- **B-MVP-1 选文评论 + AI 回复 MVP-1**（2026-04-20 Session 3 上线 `e441fae`）：4 个 API、45 个测试全绿、设计完整性审过、prod schema 已建表。UX 错误文案修和 MVP-2/MVP-3 仍在 B/F backlog。
+- **全局规则架构重构**（2026-04-20 Session 3）：`~/.claude/CLAUDE.md` 瘦身到 70 行索引；细则落 `~/.claude/rules/`；skill + 脚本一律按项目走；`/design-check` 加 Category 14 用户可见文案 BLOCKING。
 
 ---
 
