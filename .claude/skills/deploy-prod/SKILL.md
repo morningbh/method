@@ -48,7 +48,7 @@ Hence: fixed phases, fixed script, fixed report shape. The skill's only job is t
 
 ## Sub-agent prompt (use this verbatim)
 
-> Run `/home/ubuntu/method-dev/scripts/deploy.py {args} --yes` from `cwd=/home/ubuntu/method-dev`. Stream its stdout. When it finishes, read the final report path (printed as `REPORT FILE: <path>` on its last lines) and the `VERDICT:` / `ROLLBACK CMD:` lines.
+> Run `/home/ubuntu/method-dev/.venv/bin/python /home/ubuntu/method-dev/scripts/deploy.py {args} --yes` from `cwd=/home/ubuntu/method-dev`. **The `.venv/bin/python` prefix is mandatory** — the script imports `pytest`, `sqlalchemy`, `fastapi` etc. and will fail under system python (caught 2026-04-21, F5 first-use). Stream its stdout. When it finishes, read the final report path (printed as `REPORT FILE: <path>` on its last lines) and the `VERDICT:` / `ROLLBACK CMD:` lines.
 >
 > The script is deterministic — **do not interpret, edit, or substitute its steps**. If the script exits non-zero, capture the failing phase/step from its own log and surface it exactly.
 >
