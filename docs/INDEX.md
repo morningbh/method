@@ -2,6 +2,10 @@
 
 > 渐进式披露：主 agent 只读这个索引；任何一行都可以通过 sub-agent 或专门的 skill 进一步打开。禁止主 agent 直接读下面任何文档的正文内容。
 
+## 下次 session 第一份要读的文档
+
+- [`NEXT_SESSION_BRIEF.md`](NEXT_SESSION_BRIEF.md) — 2026-04-20 暂停点：在哪、做什么、R1-R5 硬约束、skill 启动清单。主 agent 新 session 应先读这份。
+
 ## 项目约束与流程
 
 - [`HARNESS.md`](HARNESS.md) — 项目级硬约束：research_requests 失败不静默、所有路径绝对路径、claude subprocess 工具白名单、session cookie flags、e2e 测试 opt-in；项目级 10 步流程（Step 5 跳过）
