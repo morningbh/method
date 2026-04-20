@@ -39,6 +39,7 @@ import magic
 from fastapi import HTTPException, UploadFile
 
 from app import config as _config
+from app.services.error_copy import message_for
 
 logger = logging.getLogger("method.file_processor")
 
@@ -116,16 +117,22 @@ class SavedFile:
 
 
 class LimitExceededError(HTTPException):
-    """HTTP 400 with ``detail = {"code": <code>, "message": <str>}``.
+    """HTTP 400 with ``detail = {"error": <code>, "message": <中文>}``.
 
     Six known codes: ``files_too_many``, ``file_too_large``,
     ``total_too_large``, ``unsupported_type``, ``empty_file``,
     ``mime_mismatch``.
+
+    When ``message`` is empty the canonical Chinese copy from
+    ``app.services.error_copy.message_for(code)`` is substituted (design §5
+    row 5). Callers may still override by passing a non-empty string.
     """
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str = "") -> None:
+        final_message = message if message else message_for(code)
         super().__init__(
-            status_code=400, detail={"code": code, "message": message}
+            status_code=400,
+            detail={"error": code, "message": final_message},
         )
 
 
@@ -141,35 +148,23 @@ async def validate_upload_limits(files: list[UploadFile]) -> None:
     ``save_and_extract`` because that's where the bytes are available.
     """
     if len(files) > _MAX_FILES:
-        raise LimitExceededError(
-            "files_too_many",
-            f"{len(files)} files exceeds the {_MAX_FILES}-per-request limit",
-        )
+        raise LimitExceededError("files_too_many")
 
     total = 0
     for f in files:
         name = f.filename or ""
         ext = Path(name).suffix.lower()
         if ext not in _ALLOWED_EXTS:
-            raise LimitExceededError(
-                "unsupported_type",
-                f"{name!r}: extension {ext!r} not in {sorted(_ALLOWED_EXTS)}",
-            )
+            raise LimitExceededError("unsupported_type")
         size = f.size or 0
         if size == 0:
-            raise LimitExceededError("empty_file", f"{name!r} is empty (0 bytes)")
+            raise LimitExceededError("empty_file")
         if size > _MAX_FILE_BYTES:
-            raise LimitExceededError(
-                "file_too_large",
-                f"{name!r} is {size} bytes, exceeds {_MAX_FILE_BYTES}",
-            )
+            raise LimitExceededError("file_too_large")
         total += size
 
     if total > _MAX_TOTAL_BYTES:
-        raise LimitExceededError(
-            "total_too_large",
-            f"total {total} bytes exceeds {_MAX_TOTAL_BYTES}",
-        )
+        raise LimitExceededError("total_too_large")
 
 
 async def save_and_extract(
@@ -189,19 +184,13 @@ async def save_and_extract(
 
     ext = Path(original_name).suffix.lower()
     if ext not in _ALLOWED_EXTS:
-        raise LimitExceededError(
-            "unsupported_type",
-            f"{original_name!r}: extension {ext!r} not in {sorted(_ALLOWED_EXTS)}",
-        )
+        raise LimitExceededError("unsupported_type")
 
     # 2. MIME sniff against the actual bytes (spoof defense).
     sniffed = _MAGIC.from_buffer(content[:_SNIFF_BYTES])
     accepted = _ACCEPTED_MIMES[ext]
     if sniffed not in accepted:
-        raise LimitExceededError(
-            "mime_mismatch",
-            f"{original_name!r}: sniffed {sniffed!r} not in {sorted(accepted)}",
-        )
+        raise LimitExceededError("mime_mismatch")
 
     # 3. mkdir -p {upload_dir}/{request_id}
     upload_root = Path(_config.settings.upload_dir).resolve()

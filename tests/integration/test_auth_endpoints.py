@@ -218,7 +218,8 @@ async def test_post_request_code_rate_limit_returns_429(
         "/api/auth/request_code", json={"email": "busy@example.com"}
     )
     assert resp.status_code == 429
-    assert resp.json() == {"error": "rate_limit"}
+    # Issue #5: body now contains both `error` (BC machine code) + `message`.
+    assert resp.json().get("error") == "rate_limit"
 
     # No new login-code email triggered by this blocked request
     assert mailer_mocks["send_login_code"].calls == []
@@ -240,7 +241,7 @@ async def test_post_request_code_mailer_failure_returns_503_and_rolls_back(
         "/api/auth/request_code", json={"email": "mailfail@example.com"}
     )
     assert resp.status_code == 503
-    assert resp.json() == {"error": "mail_send_failed"}
+    assert resp.json().get("error") == "mail_send_failed"
 
     # Transaction must have been rolled back → no login_codes row persisted.
     rows = (
@@ -302,7 +303,7 @@ async def test_post_verify_code_wrong_returns_400(
         json={"email": "wrongcode@example.com", "code": "222222"},
     )
     assert resp.status_code == 400
-    assert resp.json() == {"error": "invalid_or_expired"}
+    assert resp.json().get("error") == "invalid_or_expired"
 
 
 # ===========================================================================
@@ -323,7 +324,7 @@ async def test_post_verify_code_expired_returns_400(
         json={"email": "expired@example.com", "code": "333333"},
     )
     assert resp.status_code == 400
-    assert resp.json() == {"error": "invalid_or_expired"}
+    assert resp.json().get("error") == "invalid_or_expired"
 
 
 # ===========================================================================
@@ -344,7 +345,7 @@ async def test_post_verify_code_reused_returns_400(
         json={"email": "reused@example.com", "code": "444444"},
     )
     assert resp.status_code == 400
-    assert resp.json() == {"error": "invalid_or_expired"}
+    assert resp.json().get("error") == "invalid_or_expired"
 
 
 # ===========================================================================
@@ -397,7 +398,7 @@ async def test_post_logout_without_session_returns_401(app_client):
     app_client.cookies.clear()
     resp = await app_client.post("/api/auth/logout")
     assert resp.status_code == 401
-    assert resp.json() == {"error": "unauthenticated"}
+    assert resp.json().get("error") == "unauthenticated"
 
 
 # ===========================================================================
@@ -710,7 +711,7 @@ async def test_csrf_same_origin_check_rejects_cross_origin(
         headers={"Origin": "http://evil.example.com"},
     )
     assert resp.status_code == 403
-    assert resp.json() == {"error": "bad_origin"}
+    assert resp.json().get("error") == "bad_origin"
     # No email side effect from rejected request.
     assert mailer_mocks["send_approval_request"].calls == []
     assert mailer_mocks["send_login_code"].calls == []

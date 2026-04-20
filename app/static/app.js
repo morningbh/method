@@ -13,6 +13,20 @@
       body: JSON.stringify(obj),
     });
   }
+
+  // ---------- Centralised error renderer (Issue #5) ----------
+  // Design §6.1: the ONLY path that turns a response body into a user-visible
+  // string. Priority: body.message > caller fallback > generic by status.
+  // Never renders body.error (the machine code) — that's the anti-pattern
+  // Issue #5 eliminates.
+  function showError(body, status, fallback) {
+    body = body || {};
+    if (body.message) { alert(body.message); return; }
+    if (fallback) { alert(fallback); return; }
+    if (status >= 500) { alert("服务器开小差了，请稍后重试"); return; }
+    alert("操作失败 (" + (status || "网络") + ")，请稍后重试");
+  }
+  function showNetworkError() { alert("网络异常，请检查连接后重试"); }
   function initLogin() {
     const emailForm = document.getElementById("login-form");
     if (!emailForm) return;
@@ -32,11 +46,11 @@
       try {
         const r = await postJson("/api/auth/request_code", { email });
         const body = await r.json().catch(() => ({}));
-        if (!r.ok) { alert("发送失败：" + (body.error || r.status)); return; }
+        if (!r.ok) { showError(body, r.status); return; }
         if (body.status === "sent") show("code-sent");
         else if (body.status === "pending") show("pending");
         else if (body.status === "rejected") alert("该邮箱已被拒绝");
-      } catch (e) { alert("网络错误，请稍后再试"); }
+      } catch (e) { showNetworkError(); }
       finally { if (btn) btn.disabled = false; }
     });
     if (codeForm) {
@@ -57,10 +71,10 @@
           const r = await postJson("/api/auth/verify_code", { email, code });
           if (r.ok) { window.location.assign("/"); return; }
           const body = await r.json().catch(() => ({}));
-          alert("验证失败：" + (body.error || r.status));
+          showError(body, r.status);
           if (btn) btn.disabled = false;
         } catch (e) {
-          alert("网络错误，请稍后再试");
+          showNetworkError();
           if (btn) btn.disabled = false;
         }
       });
@@ -258,11 +272,11 @@
           window.location.assign("/history/" + body.request_id);
           return;
         }
-        const msg = body.message || body.error || ("提交失败 (" + r.status + ")");
+        const msg = body.message || ("提交失败 (" + r.status + ")，请稍后重试");
         if (errorBanner) { errorBanner.textContent = msg; errorBanner.hidden = false; }
-        else alert(msg);
+        else showError(body, r.status);
       } catch (err) {
-        if (errorBanner) { errorBanner.textContent = "网络错误"; errorBanner.hidden = false; }
+        if (errorBanner) { errorBanner.textContent = "网络异常，请检查连接后重试"; errorBanner.hidden = false; }
       } finally {
         if (submitBtn) submitBtn.disabled = false;
       }
@@ -446,16 +460,17 @@
           }
           return;
         }
+        const body = await r.json().catch(() => ({}));
         if (r.status === 409) {
-          alert("请求仍在处理中，请等它结束后再删除");
+          showError(body, 409, "请求仍在处理中，请等它结束后再操作");
         } else if (r.status === 404) {
-          alert("记录不存在或已被删除");
+          showError(body, 404, "记录不存在或已被删除");
         } else {
-          alert("删除失败 (" + r.status + ")");
+          showError(body, r.status, "删除失败 (" + r.status + ")，请稍后重试");
         }
         btn.disabled = false;
       } catch (e) {
-        alert("网络错误，请稍后再试");
+        showNetworkError();
         btn.disabled = false;
       }
     });
@@ -670,16 +685,16 @@
           closeCompose();
           currentSelection = null;
         } else if (r.status === 400) {
-          alert("提交失败：" + (resBody.error || r.status));
+          showError(resBody, r.status);
         } else if (r.status === 409) {
-          alert("当前请求还在生成中，请等它结束再评论");
+          showError(resBody, 409, "当前请求还在生成中，请等它结束再评论");
         } else if (r.status === 401) {
-          alert("登录已过期，请刷新页面");
+          showError(resBody, 401, "登录已过期，请刷新页面重新登录");
         } else {
-          alert("提交失败 (" + r.status + ")");
+          showError(resBody, r.status, "提交失败 (" + r.status + ")，请稍后重试");
         }
       } catch (_) {
-        alert("网络错误，请稍后再试");
+        showNetworkError();
       } finally {
         submitBtn.disabled = false;
       }
@@ -702,11 +717,12 @@
           card.classList.add("removing");
           setTimeout(() => card.remove(), 200);
         } else {
-          alert("删除失败 (" + r.status + ")");
+          const body = await r.json().catch(() => ({}));
+          showError(body, r.status, "删除失败 (" + r.status + ")，请稍后重试");
           btn.disabled = false;
         }
       } catch (_) {
-        alert("网络错误");
+        showNetworkError();
         btn.disabled = false;
       }
     });

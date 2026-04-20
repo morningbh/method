@@ -33,6 +33,7 @@ from app.db import get_sessionmaker
 from app.models import Comment, ResearchRequest, UploadedFile, User
 from app.routers.auth import require_user, verify_origin
 from app.services import comment_runner, file_processor, research_runner
+from app.services.error_copy import error_response_body
 
 logger = logging.getLogger("method.routes")
 
@@ -98,17 +99,17 @@ async def post_research(
     if q == "":
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "empty_question"},
+            content=error_response_body("empty_question"),
         )
     if len(q) > _MAX_QUESTION_CHARS:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "question_too_long"},
+            content=error_response_body("question_too_long"),
         )
     if mode not in _ALLOWED_MODES:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "invalid_mode"},
+            content=error_response_body("invalid_mode"),
         )
 
     # file_processor validates count/size/extension. Raises HTTPException(400)
@@ -116,8 +117,7 @@ async def post_research(
     try:
         await file_processor.validate_upload_limits(files)
     except file_processor.LimitExceededError as exc:
-        # Return the {"code","message"} detail at top level so tests can read
-        # body["code"] directly (design §2.1 step 3 — bubble the shape).
+        # Bubble the canonical {"error", "message"} detail (Issue #5 §3.2).
         return JSONResponse(status_code=400, content=exc.detail)
 
     request_id = research_runner.ulid_new()
@@ -169,7 +169,7 @@ async def post_research(
     except Exception:
         logger.exception("post_research persistence failed rid=%s", request_id)
         return JSONResponse(
-            status_code=500, content={"error": "internal"}
+            status_code=500, content=error_response_body("internal")
         )
 
     # Spawn background task — txn already committed.
@@ -361,7 +361,9 @@ async def get_research_download(
             request_id,
             plan_path,
         )
-        return JSONResponse(status_code=500, content={"error": "plan_missing"})
+        return JSONResponse(
+            status_code=500, content=error_response_body("plan_missing")
+        )
 
     return FileResponse(
         str(plan_path),
@@ -399,10 +401,7 @@ async def delete_research(
     if row.status in ("pending", "running"):
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
-            content={
-                "error": "request_busy",
-                "message": "请求仍在处理中，请等它结束后再删除",
-            },
+            content=error_response_body("request_busy"),
         )
 
     plan_path_str = row.plan_path
@@ -499,25 +498,37 @@ async def post_comment(
     if req.status not in ("done", "failed"):
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
-            content={"error": "request_not_finalized"},
+            content=error_response_body("request_not_finalized"),
         )
 
     # Manual length validation — must surface as 400 with structured error
-    # body, not as 422 default validation response.
-    if not payload.anchor_text or len(payload.anchor_text) > _MAX_ANCHOR_LEN:
+    # body, not as 422 default validation response. Whitespace-only
+    # ``anchor_text`` is treated as empty (a selection of pure whitespace is
+    # not a meaningful anchor).
+    if (
+        not payload.anchor_text
+        or not payload.anchor_text.strip()
+        or len(payload.anchor_text) > _MAX_ANCHOR_LEN
+    ):
         return JSONResponse(
-            status_code=400, content={"error": "anchor_text_invalid"}
+            status_code=400, content=error_response_body("anchor_text_invalid")
         )
-    if not payload.body or len(payload.body) > _MAX_BODY_LEN:
+    # Empty body → body_empty (design §4.1); over-length → body_invalid.
+    if not payload.body or not payload.body.strip():
         return JSONResponse(
-            status_code=400, content={"error": "body_invalid"}
+            status_code=400, content=error_response_body("body_empty")
+        )
+    if len(payload.body) > _MAX_BODY_LEN:
+        return JSONResponse(
+            status_code=400, content=error_response_body("body_invalid")
         )
     if (
         len(payload.anchor_before) > _MAX_ANCHOR_AROUND
         or len(payload.anchor_after) > _MAX_ANCHOR_AROUND
     ):
         return JSONResponse(
-            status_code=400, content={"error": "anchor_context_too_long"}
+            status_code=400,
+            content=error_response_body("anchor_context_too_long"),
         )
 
     # Normalize body via comment_runner; empty → 400 body_empty (design §5).
@@ -530,14 +541,14 @@ async def post_comment(
     except comment_runner.BodyEmptyError:
         return JSONResponse(
             status_code=400,
-            content={"error": "body_empty"},
+            content=error_response_body("body_empty"),
         )
     except Exception:
         logger.exception(
             "post_comment create failed rid=%s user_id=%s", request_id, user.id
         )
         return JSONResponse(
-            status_code=500, content={"error": "internal"}
+            status_code=500, content=error_response_body("internal")
         )
 
     # Spawn AI reply generation (background task).
@@ -648,7 +659,7 @@ async def delete_comment(
     if row.author == "ai":
         return JSONResponse(
             status_code=403,
-            content={"error": "ai_reply_not_deletable"},
+            content=error_response_body("ai_reply_not_deletable"),
         )
     if row.user_id != user.id:
         raise HTTPException(status_code=404, detail="not_found")

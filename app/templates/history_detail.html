@@ -18,7 +18,7 @@
     <a id="download-btn" class="button" href="/api/research/{{ request_id }}/download"{% if status != "done" %} aria-disabled="true" tabindex="-1"{% endif %}>下载 .md</a>
   </div>
   {% if status == "failed" %}
-  <div class="error-banner" data-markdown-source="{{ error_message }}">{{ error_message }}</div>
+  <div class="error-banner" data-markdown-source="{{ error_message or '研究失败，原因未知，请重试' }}">{{ error_message or '研究失败，原因未知，请重试' }}</div>
   {% endif %}
   <article id="markdown-body" class="markdown-body" data-markdown-source="{{ plan_markdown|default('') }}"></article>
 
