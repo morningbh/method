@@ -4,7 +4,7 @@
 
 ## 下次 session 第一份要读的文档
 
-- [`NEXT_SESSION_BRIEF.md`](NEXT_SESSION_BRIEF.md) — 2026-04-20 暂停点：在哪、做什么、R1-R5 硬约束、skill 启动清单。主 agent 新 session 应先读这份。
+- [`NEXT_SESSION_BRIEF.md`](NEXT_SESSION_BRIEF.md) — 2026-04-21 Session 4 收官：F1/F2/F4/F5 已 ship（Issue #5 上 prod，dev 永久域名搭好）；下次 P0 = F3 systemd timer。**用户在 Method 项目里说「继续」即代表"读这份 brief 然后按它说的走"**。主 agent 新 session 应先读这份。
 
 ## 项目约束与流程
 
