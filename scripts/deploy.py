@@ -350,7 +350,7 @@ def phase_a_prune(dry_run: bool) -> None:
 
 # --------- PHASE B — DEPLOY ---------
 
-def phase_b_deploy(deploy_start_ts: float) -> None:
+def phase_b_deploy() -> None:
     with step("B", "./scripts/promote-to-prod.sh --apply") as s:
         r = run([str(DEV / "scripts" / "promote-to-prod.sh"), "--apply"],
                 cwd=DEV, capture=False, timeout=600)
@@ -359,7 +359,7 @@ def phase_b_deploy(deploy_start_ts: float) -> None:
 
 # --------- PHASE C — VERIFY LIVE ---------
 
-def phase_c_verify_live(deploy_start_ts: float) -> None:
+def phase_c_verify_live() -> None:
     with step("C", f"public health: {HEALTH_URL_PUBLIC} → 200") as s:
         r = run(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}",
                  HEALTH_URL_PUBLIC])
@@ -394,17 +394,21 @@ def phase_c_verify_live(deploy_start_ts: float) -> None:
             dev_con.close()
             prod_con.close()
 
-    with step("C", "CDN freshness: /static/app.js last-modified ≥ deploy start") as s:
-        r = run(["curl", "-sS", "-I", f"{STATIC_URL_APPJS}?cb={int(time.time())}"])
-        m = re.search(r"last-modified:\s*(.+)", r.stdout, re.I)
-        if not m:
-            raise StepFailed("no last-modified header on app.js")
-        lm_str = m.group(1).strip()
-        lm = _dt.datetime.strptime(lm_str, "%a, %d %b %Y %H:%M:%S %Z").timestamp()
-        if lm < deploy_start_ts - 60:  # tolerate 60s clock skew
-            raise StepFailed(f"app.js last-modified {lm_str} < deploy start "
-                             f"{_dt.datetime.utcfromtimestamp(deploy_start_ts)} UTC")
-        s.detail = f"last-modified={lm_str}"
+    with step("C", "static freshness: prod-served app.js md5 == dev source md5") as s:
+        # Why md5-match and not last-modified: rsync -a preserves mtime, so
+        # prod's file mtime == source mtime (often pre-deploy). Method serves
+        # static via Nginx + LE directly (no Cloudflare CDN), so the real
+        # concern is "did the rsync actually land" — content-hash compare
+        # answers that without depending on filesystem timestamps.
+        import hashlib
+        dev_md5 = hashlib.md5((DEV / "app" / "static" / "app.js").read_bytes()).hexdigest()
+        r = run(["curl", "-sS", f"{STATIC_URL_APPJS}?cb={int(time.time())}"])
+        if r.returncode != 0:
+            raise StepFailed(f"failed to fetch {STATIC_URL_APPJS}: {r.stderr.strip()[:120]}")
+        served_md5 = hashlib.md5(r.stdout.encode("utf-8")).hexdigest()
+        if dev_md5 != served_md5:
+            raise StepFailed(f"served app.js md5 {served_md5} != dev source md5 {dev_md5}")
+        s.detail = f"md5={dev_md5[:12]} (dev == served)"
 
     with step("C", "journal clean: no ERROR/Traceback in last 60 s") as s:
         r = run(["sudo", "journalctl", "-u", SERVICE_UNIT, "--since", "-60s",
@@ -486,7 +490,6 @@ def main() -> int:
     REPORT.args = args
 
     BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
-    deploy_start = time.time()
 
     try:
         # Phase A
@@ -503,8 +506,8 @@ def main() -> int:
         else:
             if not args.yes:
                 input("Phase A complete. Press Enter to start Phase B (deploy to prod)... ")
-            phase_b_deploy(deploy_start)
-            phase_c_verify_live(deploy_start)
+            phase_b_deploy()
+            phase_c_verify_live()
             REPORT.final_phase = "C"
             REPORT.final_verdict = "PASS"
     except StepFailed:

@@ -33,7 +33,7 @@ Hence: fixed phases, fixed script, fixed report shape. The skill's only job is t
 3. **Phase C — VERIFY LIVE**
    1. Public `https://method.xvc.com/api/health` = 200
    2. Schema containment: every table + column in dev DB also exists in prod DB (treats `CREATE TABLE IF NOT EXISTS` risk)
-   3. CDN freshness: `/static/app.js` `last-modified` ≥ deploy start
+   3. Static freshness: prod-served `/static/app.js` md5 == dev source md5 (rsync `-a` preserves mtime, so a `last-modified ≥ deploy start` check is a false-positive trap; content-hash compare answers "did the rsync land" without depending on filesystem timestamps)
    4. `journalctl -u method.service --since "-30s"` free of `ERROR` / `Traceback`
 4. **Phase D — REPORT & NOTIFY**
    1. Write markdown report to `/home/ubuntu/method-dev/docs/runs/<ts>-deploy-<git-sha>.md`
