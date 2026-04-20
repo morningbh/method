@@ -11,7 +11,8 @@
 - **branch**: 本地 `main`（包含 Session 4 全部 commit）。`feat/issue-5-error-copy` 已 merge 到本地 main，可以删（`git branch -d feat/issue-5-error-copy`）也可以留。
 - **远程 status**: 本地 main 比 `origin/main` 超前 N 个 commit（Session 4 都没推）。下次需要时 `git push origin main` —— **执行前必须用户确认**。
 - **uncommitted working tree** 应该是干净的（如果不是，第一步检查 `git status`）。
-- **dev `.env` 本地修改**（gitignored，不会推）: `SMTP_FROM_NAME=Method DEV` —— 上次的修。
+- **dev `.env` 本地修改**（gitignored，不会推）: `SMTP_FROM_NAME=Method DEV`（Session 3 修）+ `BASE_URL=https://method-dev.xvc.com`（Session 4 末尾改，配套新建的永久 dev 域名）。
+- **新增 dev 永久域名 `https://method-dev.xvc.com`**（Session 4 末尾搭）：阿里云 DNS A 记录 → 这台 VM → Nginx (`sites-enabled/method-dev.xvc.com`) → 8002。LE 证书 certbot 自动续期。robots.txt 禁索引。详见 `docs/ops/domain-setup.md` 末尾「Dev 域名」节。**今后改 dev 代码 = `git pull / commit + sudo systemctl restart method-dev.service` + 浏览器刷 `https://method-dev.xvc.com`**，不再需要临时隧道 / SSH 隧道 / 改 `.env` 的舞蹈。
 
 ---
 
