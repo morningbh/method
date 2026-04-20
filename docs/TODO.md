@@ -147,13 +147,10 @@ Session 3 2026-04-20 定了"部署确定性化 + 备份完备性"的方向，dra
 
 ### 🔴 P0 — 下个 session 先做
 
-- [ ] **F1. `scripts/deploy.py --dry-run` 冒烟**：dev 上跑 Phase A（备份 + 验证 + gdrive 上传），不动 prod；验证备份目录结构、DB 行数对齐、rclone 到 `gdrive:backups/method/` 成功；生成 `docs/runs/<ts>-deploy-*.md` 报告。若有 bug 修完再往下走。
-- [ ] **F2. 写 `/backup-restore-drill` skill + `scripts/restore_drill.py`**：
-  - 输入：gdrive 路径（默认取最新）
-  - 动作：下载 → 解压到沙箱目录 → 起独立 uvicorn 端口 → curl `/api/health` + 一个 GET 接口 → 清理
-  - 输出：`docs/runs/<ts>-restore-drill.md`；退出 0/1；失败通过 Feishu bot 通知
+- [x] **F1. `scripts/deploy.py --dry-run` 冒烟** ✓ Session 4 (2026-04-20) — bug fixes: REQUIRED_ENV_KEYS aligned with Method (DB_PATH not DATABASE_URL); preflight ignores docs/runs/. Phase A end-to-end PASS, gdrive backup at `gdrive:backups/method/20260420-231522-deploy-8fee480/`, report `docs/runs/20260420-231522-deploy-8fee480.md`.
+- [x] **F2. 写 `/backup-restore-drill` skill + `scripts/restore_drill.py`** ✓ Session 4 (2026-04-20) — 6 phases (SELECT/DOWNLOAD/EXTRACT/BOOT/EXERCISE/CLEANUP), exercises GET /api/history (expect 401), Feishu notify on FAIL via `lark-cli im +messages-send --user-id`. Both `--source local` (~1s) and `--source gdrive` (~50s) PASS smoke.
 - [ ] **F3. systemd timer 周一 03:00 CST 跑 drill**：unit 文件 `method-restore-drill.{service,timer}`，`systemctl --user enable` 或 root；失败通知走 F2 脚本内置的 Feishu 调用（`/feishu` skill 脚本化版）
-- [ ] **F4. Issue #5 前端 UX 错误文案映射**：`app/static/app.js` 至少 3 处 `alert("X：" + body.error)` 裸拼接（`request_code` / `verify_code` / `submitResearch`），按 `/design-check` 新 Category 14 的规范先出设计稿（错误码 → 中文 copy 表），再走 10 步。涉及 error code 清单：`rate_limit` / `bad_origin` / `invalid_or_expired` / `body_invalid` / `anchor_text_invalid` / `anchor_context_too_long` / 5xx 兜底 / 网络异常 / 上传校验等。
+- [x] **F4. Issue #5 前端 UX 错误文案映射** ✓ Session 4 (2026-04-20) — 24 后端码 + 7 前端 fallback + 3 模板 fallback 统一在 `app/services/error_copy.py::ERROR_COPY` + `message_for(code)`。后端响应统一为 `{"error": <code>, "message": <中文>}`；`app/main.py` 新增统一 `StarletteHTTPException` handler 覆盖 12 处 `not_found`；`app/static/app.js` `showError()` central renderer。`feat/issue-5-error-copy` 已 merge 到本地 `main`；47 tests / 96 cases / 1 xfail / 0 fail，full regression 342 PASS。**未推 remote、未 prod deploy**（F5 留给用户）。
 - [ ] **F5. 第一次用 `/deploy-prod` skill 做真实发布**：（dog-fooding）下一次 prod 更新（可能是 F4 的 UX 修），完整走 skill → script 路径，验证人工门 + schema containment + CDN 鲜度 + journal 扫描 4 道检查都生效。旧 `promote-to-prod.sh` 保留为脚本内部调用，不再由主 agent 直接调。
 
 ### 🟡 P1

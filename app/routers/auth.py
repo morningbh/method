@@ -29,6 +29,7 @@ from app import config as _config
 from app.db import get_sessionmaker
 from app.models import User
 from app.services import auth_flow
+from app.services.error_copy import error_response_body
 
 logger = logging.getLogger("method.routes")
 
@@ -161,19 +162,19 @@ async def request_code(
         logger.info("auth.request_code rate_limited email=%s", payload.email)
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={"error": "rate_limit"},
+            content=error_response_body("rate_limit"),
         )
     except auth_flow.MailerError:
         logger.error("auth.request_code mail_send_failed email=%s", payload.email)
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={"error": "mail_send_failed"},
+            content=error_response_body("mail_send_failed"),
         )
     except IntegrityError:
         logger.warning("auth.request_code integrity_error email=%s", payload.email)
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "bad_request"},
+            content=error_response_body("bad_request"),
         )
 
     logger.info("auth.request_code ok email=%s status=%s", payload.email, result)
@@ -194,7 +195,7 @@ async def verify_code(
         logger.info("auth.verify_code invalid email=%s", payload.email)
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
-            content={"error": "invalid_or_expired"},
+            content=error_response_body("invalid_or_expired"),
         )
 
     max_age = _config.settings.session_ttl_days * 86400
@@ -273,7 +274,7 @@ def install_exception_handlers(app) -> None:
     async def _handle_unauth(request: Request, exc: _Unauthenticated):  # noqa: ARG001
         return JSONResponse(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"error": "unauthenticated"},
+            content=error_response_body("unauthenticated"),
         )
 
     @app.exception_handler(_RedirectRequired)
@@ -286,5 +287,5 @@ def install_exception_handlers(app) -> None:
     async def _handle_bad_origin(request: Request, exc: _BadOrigin):  # noqa: ARG001
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
-            content={"error": "bad_origin"},
+            content=error_response_body("bad_origin"),
         )

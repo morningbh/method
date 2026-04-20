@@ -178,7 +178,7 @@ async def test_post_research_without_auth_returns_401(app_client, research_paths
         data={"question": "Q?"},
     )
     assert resp.status_code == 401
-    assert resp.json() == {"error": "unauthenticated"}
+    assert resp.json().get("error") == "unauthenticated"
 
 
 # ===========================================================================
@@ -200,7 +200,7 @@ async def test_post_research_empty_question_returns_400(
     app_client.cookies.clear()
 
     assert resp.status_code == 400
-    assert resp.json() == {"error": "empty_question"}
+    assert resp.json().get("error") == "empty_question"
 
 
 # ===========================================================================
@@ -223,7 +223,7 @@ async def test_post_research_too_long_question_returns_400(
     app_client.cookies.clear()
 
     assert resp.status_code == 400
-    assert resp.json() == {"error": "question_too_long"}
+    assert resp.json().get("error") == "question_too_long"
 
 
 # ===========================================================================
@@ -251,11 +251,7 @@ async def test_post_research_too_many_files_returns_400(
 
     assert resp.status_code == 400
     body = resp.json()
-    # file_processor.LimitExceededError uses {"code", "message"} shape.
-    # Accept either the bubbled shape or a bare {"code": "files_too_many"}.
-    # The key check is: code indicates too-many-files.
-    code = body.get("code") or body.get("detail", {}).get("code") or body.get("error")
-    assert code == "files_too_many", f"unexpected 400 body: {body!r}"
+    assert body.get("error") == "files_too_many", f"unexpected 400 body: {body!r}"
 
 
 # ===========================================================================

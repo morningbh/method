@@ -285,7 +285,7 @@ async def test_mime_mismatch_rejected(upload_dir: Path) -> None:
     with pytest.raises(LimitExceededError) as excinfo:
         await save_and_extract(VALID_ULID, "sniff.pdf", fake_pdf)
     assert excinfo.value.status_code == 400
-    assert excinfo.value.detail["code"] == "mime_mismatch"
+    assert excinfo.value.detail["error"] == "mime_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +300,7 @@ async def test_validate_limits_too_many_files_raises() -> None:
     with pytest.raises(LimitExceededError) as excinfo:
         await validate_upload_limits(files)
     assert excinfo.value.status_code == 400
-    assert excinfo.value.detail["code"] == "files_too_many"
+    assert excinfo.value.detail["error"] == "files_too_many"
 
 
 async def test_validate_limits_file_too_large_raises() -> None:
@@ -310,7 +310,7 @@ async def test_validate_limits_file_too_large_raises() -> None:
     files = [_FakeUploadFile("big.pdf", 51 * 1024 * 1024)]
     with pytest.raises(LimitExceededError) as excinfo:
         await validate_upload_limits(files)
-    assert excinfo.value.detail["code"] == "file_too_large"
+    assert excinfo.value.detail["error"] == "file_too_large"
 
 
 async def test_validate_limits_at_per_file_cap_accepted() -> None:
@@ -329,7 +329,7 @@ async def test_validate_limits_total_too_large_raises() -> None:
     files = [_FakeUploadFile(f"f{i}.pdf", 40 * 1024 * 1024) for i in range(3)]
     with pytest.raises(LimitExceededError) as excinfo:
         await validate_upload_limits(files)
-    assert excinfo.value.detail["code"] == "total_too_large"
+    assert excinfo.value.detail["error"] == "total_too_large"
 
 
 async def test_validate_limits_unsupported_extension_raises() -> None:
@@ -338,7 +338,7 @@ async def test_validate_limits_unsupported_extension_raises() -> None:
     files = [_FakeUploadFile("malware.exe", 1024)]
     with pytest.raises(LimitExceededError) as excinfo:
         await validate_upload_limits(files)
-    assert excinfo.value.detail["code"] == "unsupported_type"
+    assert excinfo.value.detail["error"] == "unsupported_type"
 
 
 async def test_validate_limits_empty_file_raises() -> None:
@@ -347,7 +347,7 @@ async def test_validate_limits_empty_file_raises() -> None:
     files = [_FakeUploadFile("blank.md", 0)]
     with pytest.raises(LimitExceededError) as excinfo:
         await validate_upload_limits(files)
-    assert excinfo.value.detail["code"] == "empty_file"
+    assert excinfo.value.detail["error"] == "empty_file"
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +492,7 @@ async def test_png_with_wrong_extension_mime_mismatch(upload_dir: Path) -> None:
     png_bytes = SAMPLE_PNG.read_bytes()
     with pytest.raises(LimitExceededError) as excinfo:
         await save_and_extract(VALID_ULID, "fake.jpg", png_bytes)
-    assert excinfo.value.detail["code"] == "mime_mismatch"
+    assert excinfo.value.detail["error"] == "mime_mismatch"
 
 
 async def test_image_extensions_in_allowed_set() -> None:

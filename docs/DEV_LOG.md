@@ -494,3 +494,72 @@ Same day as Session 2 wrap; this sitting promoted feature B to prod, hit several
 Plus edits to `docs/DEV_LOG.md` (this section), `docs/TODO.md`, `docs/NEXT_SESSION_BRIEF.md`. Left uncommitted by design so the next session owns the decision.
 
 Backups: `/tmp/method-backup-issue4-1776681529/`, `/tmp/method-backup-big-1776645971/`, `/tmp/method-backup-mode-1776607554/`, `/tmp/method-backup-delete-1776614218/`
+
+## Session 4 — 2026-04-20 (deploy infra smoke + Issue #5 error copy)
+
+First session under the new R1-R5 dispatcher rules. Brief-driven kickoff (`docs/NEXT_SESSION_BRIEF.md`), main agent stayed out of design/code bodies — every read/write of substance went through a sub-agent.
+
+### What shipped
+
+- **F1 — `scripts/deploy.py --dry-run` smoke PASS.** Phase A end-to-end green; backup at `gdrive:backups/method/20260420-231522-deploy-8fee480/`. Caught two real bugs:
+  1. `REQUIRED_ENV_KEYS` checked `DATABASE_URL` but Method's `.env` uses `DB_PATH` — fixed to `("DB_PATH", "SESSION_SECRET", "SMTP_PASSWORD", "BASE_URL")`.
+  2. `preflight: working tree clean` tripped on its own prior FAIL report under `docs/runs/` — added an exclusion (chicken-and-egg with the script's own writes).
+- **F2 — `/backup-restore-drill` skill + `scripts/restore_drill.py`** (deterministic, 6 phases SELECT/DOWNLOAD/EXTRACT/BOOT/EXERCISE/CLEANUP). Both `--source local` (~1s) and `--source gdrive` (~50s) PASS. Exercises `GET /api/history` → expects 401/403 (proves auth middleware + DB session lookup both work against the restored DB). Feishu DM on FAIL via `lark-cli im +messages-send --user-id ou_...`.
+- **Issue #5 — frontend UX error copy refresh** (full 10-step flow, branch `feat/issue-5-error-copy`):
+  - 24 backend codes + 7 frontend fallbacks + 3 template fallbacks unified under `app/services/error_copy.py::ERROR_COPY` + `message_for(code)` helper. Backend now returns `{"error": <code>, "message": <Chinese>, ...}` everywhere.
+  - `app/main.py` adds a single `StarletteHTTPException` handler that wraps `HTTPException(detail=<str>)` (e.g., the 12 `not_found` raises in `research.py` + `history.py`) into the unified shape — avoids 12 mechanical edits.
+  - `app/services/file_processor.LimitExceededError` migrated `{code, message-en}` → `{error, message-zh}`. BC tripwire test asserts `"code" not in body`. 3 BC test files updated to read `body["error"]`.
+  - `app/static/app.js` adds `showError(body)` central renderer (`alert(body.message || body.error || "网络异常,请稍后重试")`); 17 alert sites swept.
+  - `app/templates/history_detail.html` Chinese fallback copy.
+  - 47 RED tests across 5 files (96 parametrized cases + 1 documented `xfail`). Full regression: 342 passed / 2 skipped / 1 xfail.
+
+### Skill-driven 10-step trace (Issue #5)
+
+| Step | Skill / Agent | Iters | Verdict | Report |
+|---|---|---|---|---|
+| 0 preflight | `/preflight #5` | 1 | READY | (inline) |
+| 1 env check | (chat) | — | budget 10 iter / 10 min | (inline) |
+| 2a design draft | sub-agent | 1 | READY-FOR-DESIGN-CHECK | `docs/design/issue-5-error-copy.md` |
+| 2a `/design-check` | sub-agent | **1** | PASS (0 BLOCKING) | `docs/runs/20260420-design-check-issue-5.md` |
+| 2b human review | `/feishu` | 1 | APPROVED | https://www.feishu.cn/docx/ELuZdvupDoTkFBxtDcKcSu2UnAe |
+| 3 `/tester` | sub-agent | 1 (1 retry on overload) | TESTS-WRITTEN 13/13 | `docs/runs/20260420-tester-issue-5.md` |
+| 4 `/test-quality-check` | sub-agent | **1** | PASS (0 BLOCKING) | `docs/runs/20260420-tqc-issue-5.md` |
+| 5 (skipped per Method HARNESS) | — | — | — | — |
+| 6+7 backup + dev loop | sub-agent | **3** | GREEN | `docs/runs/20260420-devloop-issue-5.md` |
+| 8 `/review` | sub-agent | 1 | PASS (0 FAIL / 3 trivial WARN) | `docs/runs/20260420-review-issue-5.md` |
+| 9 DEV_LOG | (this entry) | — | — | — |
+
+Every gate PASS first try except the 3-iter dev loop — efficient.
+
+### Non-obvious decisions
+
+- **Test file placement deviated from design.** Design §5 specified `tests/routers/test_*.py` and `tests/services/test_*.py`; tester placed under `tests/integration/` and `tests/unit/` instead, to inherit existing fixtures (`app_client`, `auth_session`, `research_paths`, `mailer_mocks`). TQC accepted as WARN (not FAIL) since coverage stayed 13/13. Logged in tester report §Assumptions #1.
+- **Two router behavior changes beyond raw error-shape migration.** Dev-loop sub-agent identified that whitespace-only `anchor_text` was being silently accepted (now classifies as `anchor_text_invalid`) and empty `body` was misclassified as `body_invalid` (now `body_empty`). Both required by Issue #5 tests; reviewer confirmed they don't break comment-creation tests.
+- **Unified `HTTPException` handler instead of 12 per-route edits.** Design §7 note 1. Single `StarletteHTTPException` handler in `app/main.py` wraps str-detail HTTPExceptions; dict-detail HTTPExceptions pass through unchanged. Massive reduction in surface area.
+- **Restore drill exercises `/api/history` (not `/api/research`).** First attempt used `/api/research` (POST-only → returned 405). `/api/history` is GET + auth-required + touches DB on session lookup → cleaner positive signal that "the restored DB can serve a request".
+- **`lark-cli` user vs chat ID.** The saved Boyu Feishu ID is `ou_*` (user open_id); use `--user-id`, not `--chat-id`. First drill draft had wrong arg shape, captured + fixed in F2 commit.
+
+### Things the user should know
+
+- **Issue #5 is local-only.** Branch `feat/issue-5-error-copy` merged to local `main`; no `git push`, no prod deploy. F5 (first real `/deploy-prod`) intentionally deferred — user invokes when ready.
+- **F3 (systemd timer for weekly drill) NOT installed.** Needs sudo to write `/etc/systemd/system/method-restore-drill.{service,timer}`. Drafted unit files NOT written to disk — saving for a session where the user is present to authorize the install.
+- **Three trivial WARNs from `/review` cleaned up before commit:** unused imports in `app/main.py`, stale `body.get("code")` fallback in `tests/integration/test_research_endpoints.py:257`, ruff cosmetic on `app/services/error_copy.py:15` (skipped — single-import file). Re-ran targeted + full regression after cleanup → all green.
+
+### Files committed this session
+
+- `bf64cd2` chore(infra): /deploy-prod skill draft + Session 3 handover
+- `<sha-pending>` fix(deploy): align REQUIRED_ENV_KEYS with Method's actual .env schema
+- `<sha-pending>` fix(deploy): exclude docs/runs/ from working-tree-clean preflight
+- `<sha-pending>` feat(infra): /backup-restore-drill skill + scripts/restore_drill.py (F2)
+- `<sha-pending>` feat(error-copy): unified backend {error, message} response — Issue #5
+- `<sha-pending>` docs: close Issue #5 — DEV_LOG + TODO + brief
+
+### Lessons codified this session
+
+- **L-S4.1: Sub-agent overload is a real failure mode.** Tester sub-agent hit `overloaded_error` after 28 tool uses; partial test file was salvageable. Future tester-style skills should be re-runnable safely (read existing partial output first, decide salvage vs rewrite). Documented in tester retry prompt — no skill change required, but a pattern worth keeping in mind.
+- **L-S4.2: Brief-driven kickoff works.** `docs/NEXT_SESSION_BRIEF.md` carried the full handover state; main agent never had to re-derive context. R1-R5 dispatcher rules held throughout — main agent never read a design body or implementation file directly.
+- **L-S4.3: Deterministic scripts catch bugs LLMs would paper over.** `deploy.py` dry-run found `DATABASE_URL` mismatch the LLM would have asserted-around. Same shape as L-S3.1: when the script fails fast, the bug is in the script (or its assumptions) — never in "the LLM wasn't smart enough".
+
+### Next session pickup
+
+See refreshed `docs/NEXT_SESSION_BRIEF.md`. P0 backlog (Section F): F3 (systemd timer install — needs sudo), F5 (first real `/deploy-prod` — user-initiated). MVP-2 / MVP-3 of feature B in §B remain.
