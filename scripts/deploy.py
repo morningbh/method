@@ -145,8 +145,14 @@ def phase_a_preflight(args: argparse.Namespace) -> None:
 
     with step("A", "preflight: working tree clean"):
         r = run(["git", "-C", str(DEV), "status", "--porcelain"])
-        if r.stdout.strip():
-            raise StepFailed(f"working tree dirty:\n{r.stdout}")
+        # Ignore docs/runs/ — deploy.py itself writes reports there, so its own
+        # prior runs would trip this check (chicken-and-egg).
+        dirty = [
+            ln for ln in r.stdout.splitlines()
+            if ln.strip() and not ln[3:].startswith("docs/runs/")
+        ]
+        if dirty:
+            raise StepFailed("working tree dirty:\n" + "\n".join(dirty))
 
     with step("A", "preflight: capture git sha") as s:
         r = run(["git", "-C", str(DEV), "rev-parse", "HEAD"])
