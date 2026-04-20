@@ -70,11 +70,28 @@ Audit context in chat history 2026-04-20. Current state: 8 users, 14 research re
 - **B-Q8 模型**：**系统默认 Opus**（评论是 skill 进化燃料，不降级 Haiku；保留 `CLAUDE_COMMENT_MODEL` env 逃生门）
 - **B-Q9 注销数据**：**软删 30 天可恢复**（联动 A8；合规硬要求时再改硬删）
 
-### 待办
+### 当前进度（Session 2，2026-04-20 暂停点）
 
-- [ ] 飞书 v2 设计审核通过后 → `/preflight #B`
-- [ ] MVP-2 backlog：`/history` 卡片"💬 3"评论数徽标 + `cost_usd` 观察面板
-- [ ] MVP-3 backlog：行内高亮（TreeWalker + `<mark>`）
+**Branch**: `feat/issue-4-comments` on `/home/ubuntu/method-dev/`
+**状态**: Step 7 dev loop 进行中，40/45 测试通过。最近 commit: "WIP: feature B dev loop — 40/45 tests green, 5 failing in progress"。
+
+**5 个 failing tests 的 fix 已写但未验证**（见 DEV_LOG session 2 详细列表）：
+1-2. POST 长度校验改为 400（manual），待验
+3-4. DELETE 测试 `uc_id = uc.id` / `ai_id = ai.id` 在 `expire_all()` 前捕获，待验
+5. `history_detail.html` class 修正 + `data-markdown-source` 由 router 传入，待验
+
+**下次 session 在 `/home/ubuntu/method-dev/` 继续**：
+
+1. `/run-tests tests/unit/test_comment_runner.py tests/integration/test_comment_endpoints.py` — 应该 45/45 PASS
+2. 若通过，`/run-tests` 跑全项目回归
+3. `/review #B` 代码评审（Step 8）
+4. DEV_LOG 补最终提交摘要（Step 9）
+5. Merge 回 `main`；`./scripts/promote-to-prod.sh --apply` 上线
+
+### MVP backlog
+
+- MVP-2：`/history` 卡片"💬 3"评论数徽标 + `cost_usd` 观察面板
+- MVP-3：行内高亮（TreeWalker + `<mark>`）
 
 ### 实现大纲（等 B-Q1..Q5 定了再细化）
 
