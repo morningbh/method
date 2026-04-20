@@ -1,4 +1,4 @@
-# Next Session Brief — 2026-04-20 Session 4 暂停点
+# Next Session Brief — 2026-04-21 Session 4 完整收官
 
 > 你是主 agent，R1-R5 硬规则生效（`~/.claude/CLAUDE.md` + `~/.claude/rules/`）。只读这份 brief + `docs/INDEX.md` + `docs/TODO.md` + `docs/DEV_LOG.md` 尾部。**不读代码 / 设计文档正文 / 测试文件**。需要就派 sub-agent。
 
@@ -7,7 +7,7 @@
 ## 你在哪
 
 - **cwd**: 编辑只在 `/home/ubuntu/method-dev/`（memory `project_env_split.md`）
-- **prod status**: 仍是 Session 3 上线的 feature B MVP-1（commit `e441fae`，`https://method.xvc.com/api/health = 200`）。**Issue #5 错误文案改动尚未推 prod**（local main 已 merge，未 push remote）。
+- **prod status**: Issue #5 错误文案 **已上线** (commit `6bf0c2d`，`/deploy-prod` 跑过)。`https://method.xvc.com/api/health = 200`，新 error shape 在 prod 服务（`429 {"error":"rate_limit","message":"请求过于频繁，请稍后再试"}` 验过）。17 users / 20 research / DB integrity ok。Backup: `gdrive:backups/method/20260421-010451-deploy-6bf0c2d/`。
 - **branch**: 本地 `main`（包含 Session 4 全部 commit）。`feat/issue-5-error-copy` 已 merge 到本地 main，可以删（`git branch -d feat/issue-5-error-copy`）也可以留。
 - **远程 status**: 本地 main 比 `origin/main` 超前 N 个 commit（Session 4 都没推）。下次需要时 `git push origin main` —— **执行前必须用户确认**。
 - **uncommitted working tree** 应该是干净的（如果不是，第一步检查 `git status`）。
@@ -20,35 +20,16 @@
 
 1. **F1 ✅** `scripts/deploy.py --dry-run` PASS。修了 2 bug：`DATABASE_URL` → `DB_PATH`；preflight 忽略 `docs/runs/`。
 2. **F2 ✅** `/backup-restore-drill` skill + `scripts/restore_drill.py`。`--source local` (~1s) 和 `--source gdrive` (~50s) 都 PASS。失败时 `lark-cli im +messages-send --user-id ou_...` 通知。
-3. **F4 ✅** Issue #5 前端 UX 错误文案。完整走 10 步流程：preflight → design (`docs/design/issue-5-error-copy.md`) → design-check PASS → 飞书评审批 → tester (47 tests) → tqc PASS → dev loop GREEN (3 iter) → review PASS → DEV_LOG。merge 到本地 main，未推。
+3. **F4 ✅** Issue #5 前端 UX 错误文案。完整走 10 步流程：preflight → design (`docs/design/issue-5-error-copy.md`) → design-check PASS → 飞书评审批 → tester (47 tests) → tqc PASS → dev loop GREEN (3 iter) → review PASS → DEV_LOG。merge 到本地 main。
 4. **3 个 trivial WARN cleanup** 后再 verify：full regression 342 PASS / 1 xfail / 0 fail。
+5. **新 dev 永久域名 `https://method-dev.xvc.com`** —— Aliyun DNS + Nginx + LE。改 dev = `git pull → sudo systemctl restart method-dev.service → 浏览器刷`，不再要临时隧道。
+6. **F5 ✅** Issue #5 上线 prod。修了 2 个 deploy.py bug：(a) sub-agent prompt 漏了 `.venv/bin/python` (Phase A preflight 抓到，未碰 prod)；(b) Phase C `/static/app.js` 的 mtime 检查是假阳性（rsync `-a` 保留 mtime），改成 md5 content-hash 比对。prod 实测健康。
 
 详见 `docs/DEV_LOG.md` Session 4 节。
 
 ---
 
 ## 这轮留给下次的 P0（按优先级）
-
-### F5 — 第一次真实 `/deploy-prod`
-
-local main 已经包含 Issue #5 的 UX 修。准备好了就推 prod：
-
-```bash
-cd /home/ubuntu/method-dev
-git push origin main          # 主 agent 推前要用户确认 — 这是 shared state
-.venv/bin/python scripts/deploy.py --skip-human-smoke --yes
-```
-
-`--skip-human-smoke` 因为 Issue #5 已被 sub-agent + tester + tqc + review 4 道把关，没有真人浏览器手测的 evidence file —— **如果这次想严格走人工门**，先用户在浏览器验一下错误文案（譬如让登录被 rate limit、让上传超 50MB），写 `docs/runs/<ts>-human-smoke-issue5.md` 再不带 flag 跑。
-
-第一次走完整 4 phases（A backup → B deploy via promote-to-prod.sh → C verify-live → D report）。Phase C 会自动验：
-
-- `https://method.xvc.com/api/health = 200`
-- prod schema ⊇ dev schema
-- `/static/app.js` `last-modified` ≥ deploy start
-- `journalctl -u method.service --since "-30s"` 无 ERROR / Traceback
-
-哪一道挂了，rollback 一行就在脚本输出里。
 
 ### F3 — systemd timer 装 weekly drill
 

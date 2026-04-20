@@ -560,6 +560,27 @@ Every gate PASS first try except the 3-iter dev loop — efficient.
 - **L-S4.2: Brief-driven kickoff works.** `docs/NEXT_SESSION_BRIEF.md` carried the full handover state; main agent never had to re-derive context. R1-R5 dispatcher rules held throughout — main agent never read a design body or implementation file directly.
 - **L-S4.3: Deterministic scripts catch bugs LLMs would paper over.** `deploy.py` dry-run found `DATABASE_URL` mismatch the LLM would have asserted-around. Same shape as L-S3.1: when the script fails fast, the bug is in the script (or its assumptions) — never in "the LLM wasn't smart enough".
 
+### Session 4 addendum (~01:00 CST 2026-04-21)
+
+After Session 4 wrap, user came back to test + ship Issue #5. Three more pieces shipped this same sitting:
+
+**Permanent dev domain `https://method-dev.xvc.com`** — replaces the per-test cloudflared/SSH-tunnel dance. Aliyun DNS A → this VM → Nginx (`/etc/nginx/sites-available/method-dev.xvc.com`) → 127.0.0.1:8002. LE cert via certbot (auto-renew). robots.txt deny inlined. Documented in `docs/ops/domain-setup.md` end-section. Workflow now: `git pull && sudo systemctl restart method-dev.service && refresh https://method-dev.xvc.com`.
+
+**Issue #5 human smoke (PASS)** — user verified all 5 error-copy scenarios on dev domain. Evidence: `docs/runs/20260421-human-smoke-issue5.md`. Last scenario (`/history/<bad>`) returned `{"error":"not_found","message":"记录不存在或已被删除"}` — clean.
+
+**F5 — first real `/deploy-prod`**. Two iterations:
+1. **Iteration 1**: failed Phase A preflight on missing pytest — sub-agent invoked `python3 deploy.py` (system python) instead of `.venv/bin/python deploy.py`. SKILL.md fixed to mandate venv prefix in sub-agent prompt. Prod untouched (Phase A abort-before-mutate contract held).
+2. **Iteration 2**: Phase A + B PASS; Phase C failed on **CDN freshness false positive** — rsync `-a` preserved app.js mtime (16:40 UTC, original edit), check expected mtime ≥ deploy start (17:04 UTC) → FAIL. Manual verification confirmed prod was actually serving new code (md5 match dev source = prod file = served-via-Nginx). **Prod is healthy**: 17 users / 20 research / DB integrity ok / 0 ERROR/Traceback in journal / new error-shape live (`429 {"error":"rate_limit","message":"请求过于频繁，请稍后再试"}`). Deploy effectively COMPLETE.
+   - **Fix**: replaced mtime check with md5 content-hash compare (dev source vs `https://method.xvc.com/static/app.js`). Method has no Cloudflare CDN, so the mtime-freshness rationale (edge cache invalidation) doesn't apply. SKILL.md §Phase C §3 updated to match.
+   - **Backup**: `gdrive:backups/method/20260421-010451-deploy-6bf0c2d/` (intact)
+   - **Rollback cmd** (if ever needed): `sudo systemctl stop method.service && rsync -a --delete-after /home/ubuntu/backups/20260421-010451-deploy-6bf0c2d/code/ /home/ubuntu/method/ && cp -p /home/ubuntu/backups/20260421-010451-deploy-6bf0c2d/env/.env /home/ubuntu/method/.env && cp -p /home/ubuntu/backups/20260421-010451-deploy-6bf0c2d/db/method.sqlite /home/ubuntu/method/data/method.sqlite && sudo systemctl start method.service`
+
+### Lessons (addendum)
+
+- **L-S4.4: Sub-agent invocation prompts must specify the venv interpreter.** "Run scripts/deploy.py" → sub-agent picks `python3` from PATH (system, no project deps). SKILL.md sub-agent prompt MUST be `<venv>/bin/python <script>`. Fixed in `deploy-prod/SKILL.md`.
+- **L-S4.5: Verify-live checks must match the actual infra, not generic infra.** Original Phase C copied a pattern from CDN-fronted services (last-modified header). Method serves direct via Nginx + LE — no CDN cache to invalidate. The right check is "did rsync land" = content-hash compare. Apply this filter to every Phase C step: "what failure mode does this catch in OUR infra?"
+- **L-S4.6: Even when a verify check is a false positive, the deploy contract is sound.** Phase A backup → Phase B deploy → Phase C verify; Phase C failure does NOT roll back automatically (correct — the verify itself can be wrong). Operator decides: rollback (if check is real) vs. fix the check (if false positive). Manual verification via independent commands is what disambiguates.
+
 ### Next session pickup
 
-See refreshed `docs/NEXT_SESSION_BRIEF.md`. P0 backlog (Section F): F3 (systemd timer install — needs sudo), F5 (first real `/deploy-prod` — user-initiated). MVP-2 / MVP-3 of feature B in §B remain.
+See refreshed `docs/NEXT_SESSION_BRIEF.md`. P0 backlog (Section F): F3 (systemd timer install for weekly restore drill — needs sudo). MVP-2 / MVP-3 of feature B in §B remain. F1, F2, F4, F5 all complete.
