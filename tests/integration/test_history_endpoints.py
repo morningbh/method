@@ -518,3 +518,34 @@ async def test_history_detail_escapes_question_html(
     assert "<script>alert(1)</script>" not in body
     # Escaped form must appear.
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+
+
+# ===========================================================================
+# History list: per-card delete button (hover + click → DELETE /api/research)
+# ===========================================================================
+
+
+async def test_history_page_renders_delete_button_per_card(
+    app_client, auth_session, integration_db
+):
+    user, raw = await auth_session("del-btn@example.com")
+    rid = "01HDELBTN00000000000000000"
+    await _seed_request(
+        integration_db,
+        user_id=user.id,
+        request_id=rid,
+        question="some past research",
+        status="done",
+    )
+    app_client.cookies.set("method_session", raw)
+    resp = await app_client.get("/history")
+    app_client.cookies.clear()
+
+    body = resp.text
+    # A delete control (class name + ARIA label + request_id data-attribute)
+    # must exist for each card, and must be a <button>, not an <a> (anchors
+    # inside anchors are invalid HTML — the card anchor must not wrap the
+    # delete control).
+    assert 'class="card-delete"' in body or "class='card-delete'" in body
+    assert f'data-request-id="{rid}"' in body
+    assert 'aria-label="删除"' in body or "aria-label='删除'" in body

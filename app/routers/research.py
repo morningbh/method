@@ -25,8 +25,8 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from sqlalchemy import select
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from sqlalchemy import delete, select
 
 from app.db import get_sessionmaker
 from app.models import ResearchRequest, UploadedFile, User
@@ -39,6 +39,11 @@ router = APIRouter()
 
 
 _MAX_QUESTION_CHARS = 4000
+
+# Accepted values for the ``mode`` form field. ``general`` drives the
+# research-method-designer router skill (default); ``investment`` drives the
+# investment-research-planner skill (beta). Unknown values → 400 invalid_mode.
+_ALLOWED_MODES = frozenset({"general", "investment"})
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +89,7 @@ def _sse_frame(event: str, data: dict) -> str:
 async def post_research(
     request: Request,  # noqa: ARG001 — kept for parity/future use
     question: str = Form(...),
+    mode: str = Form("general"),
     files: list[UploadFile] = File(default_factory=list),
     user: User = Depends(require_user),
 ) -> JSONResponse:
@@ -97,6 +103,11 @@ async def post_research(
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": "question_too_long"},
+        )
+    if mode not in _ALLOWED_MODES:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": "invalid_mode"},
         )
 
     # file_processor validates count/size/extension. Raises HTTPException(400)
@@ -161,12 +172,13 @@ async def post_research(
         )
 
     # Spawn background task — txn already committed.
-    await research_runner.run_research(request_id)
+    await research_runner.run_research(request_id, mode)
 
     logger.info(
-        "research.post_research created rid=%s user_id=%s files=%d",
+        "research.post_research created rid=%s user_id=%s mode=%s files=%d",
         request_id,
         user.id,
+        mode,
         len(files),
     )
     return JSONResponse(
@@ -355,3 +367,79 @@ async def get_research_download(
         media_type="text/markdown",
         filename=f"research-{request_id}.md",
     )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/research/<id> — owner-scoped delete; cleans DB + filesystem.
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/api/research/{request_id}", dependencies=[Depends(verify_origin)]
+)
+async def delete_research(
+    request_id: str,
+    user: User = Depends(require_user),
+) -> Response:
+    """Delete a research request owned by ``user``.
+
+    - 404 if missing OR owned by another user (no enumeration oracle).
+    - 409 if the request is still ``pending`` / ``running`` (background task
+      owns the upload dir; racing with the live claude subprocess would break
+      its reads and leak partial state).
+    - 204 on success. Cascades: ``uploaded_files`` rows → DB commit, then
+      ``{upload_dir}/{request_id}/`` directory + ``plan_path`` file on disk.
+      Post-commit filesystem cleanup is best-effort (logged, not fatal) so a
+      transient fs error cannot leave a row in an inconsistent state.
+    """
+    row = await _load_owned(request_id, user)
+    if row is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    if row.status in ("pending", "running"):
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": "request_busy",
+                "message": "请求仍在处理中，请等它结束后再删除",
+            },
+        )
+
+    plan_path_str = row.plan_path
+    async with get_sessionmaker()() as s:
+        async with s.begin():
+            await s.execute(
+                delete(UploadedFile).where(UploadedFile.request_id == request_id)
+            )
+            await s.execute(
+                delete(ResearchRequest).where(
+                    ResearchRequest.id == request_id,
+                    ResearchRequest.user_id == user.id,
+                )
+            )
+
+    # Post-commit filesystem cleanup — best-effort.
+    try:
+        await file_processor.cleanup_request(request_id)
+    except Exception:
+        logger.exception(
+            "research.delete cleanup_request failed rid=%s (row already deleted)",
+            request_id,
+        )
+
+    if plan_path_str:
+        try:
+            p = Path(plan_path_str)
+            if p.exists():
+                p.unlink()
+        except OSError:
+            logger.exception(
+                "research.delete plan file unlink failed rid=%s path=%s "
+                "(row already deleted)",
+                request_id,
+                plan_path_str,
+            )
+
+    logger.info(
+        "research.delete rid=%s user_id=%s", request_id, user.id
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

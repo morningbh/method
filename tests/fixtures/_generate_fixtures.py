@@ -8,11 +8,15 @@ Usage:
     pip install --no-deps reportlab pypdf
     python tests/fixtures/_generate_fixtures.py
 
-Fixtures produced (all kept small, < 10 KB each):
+Fixtures produced (all kept small, < 30 KB each):
     sample.md        — plain markdown
     sample.txt       — plain text
     sample.pdf       — tiny 1-page PDF with known text
     sample.docx      — tiny 1-paragraph DOCX
+    sample.pptx      — tiny 1-slide PPTX with known text (via python-pptx)
+    sample.xlsx      — tiny 1-sheet XLSX with known cell text (via openpyxl)
+    sample.png       — tiny 1x1 PNG (via Pillow)
+    sample.jpg       — tiny 1x1 JPEG (via Pillow)
     encrypted.pdf    — password-protected PDF (pdfplumber raises)
     empty.pdf        — 1-page PDF with no extractable text
 
@@ -30,6 +34,8 @@ MD_TEXT = "# Sample\n\nHello from Method test markdown.\n"
 TXT_TEXT = "Hello from Method test txt.\n"
 PDF_TEXT = "Hello from Method test PDF. This is a sample document for extraction testing."
 DOCX_TEXT = "Hello from Method test DOCX. This is a sample document for extraction testing."
+PPTX_TEXT = "Hello from Method test PPTX. Slide one."
+XLSX_TEXT = "Hello from Method test XLSX"
 
 
 def write_md() -> None:
@@ -128,6 +134,45 @@ def write_sample_docx() -> None:
         z.writestr("word/document.xml", document_xml)
 
 
+def write_sample_pptx() -> None:
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    blank = prs.slide_layouts[6]  # blank layout
+    slide = prs.slides.add_slide(blank)
+    tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1))
+    tb.text_frame.text = PPTX_TEXT
+    prs.save(str(FIXTURES_DIR / "sample.pptx"))
+
+
+def write_sample_xlsx() -> None:
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    ws["A1"] = XLSX_TEXT
+    ws["B1"] = "Slide two cell"
+    ws["A2"] = "row2"
+    ws["B2"] = 42
+    wb.save(str(FIXTURES_DIR / "sample.xlsx"))
+
+
+def write_sample_png() -> None:
+    from PIL import Image
+
+    img = Image.new("RGB", (1, 1), color=(200, 100, 50))
+    img.save(str(FIXTURES_DIR / "sample.png"), format="PNG")
+
+
+def write_sample_jpg() -> None:
+    from PIL import Image
+
+    img = Image.new("RGB", (1, 1), color=(50, 100, 200))
+    img.save(str(FIXTURES_DIR / "sample.jpg"), format="JPEG")
+
+
 def main() -> None:
     write_md()
     write_txt()
@@ -135,6 +180,10 @@ def main() -> None:
     write_empty_pdf()
     write_encrypted_pdf()
     write_sample_docx()
+    write_sample_pptx()
+    write_sample_xlsx()
+    write_sample_png()
+    write_sample_jpg()
     for f in sorted(FIXTURES_DIR.iterdir()):
         if f.name.startswith("_") or f.name == "__init__.py":
             continue

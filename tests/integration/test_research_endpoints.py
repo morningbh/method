@@ -63,13 +63,18 @@ VALID_ULID_FIXTURE = "01HXZK8D7Q3V0S9B4W2N6M5C7R"
 def _install_fake_stream(monkeypatch, events):
     """Install a fake ``stream`` on research_runner that yields ``events``.
 
-    Returns the list so tests can mutate it if needed.
+    Returns a holder dict:
+      ``holder["events"]`` — the event list (mutable)
+      ``holder["prompts"]`` — list of prompts seen so far (for mode/template assertions)
+      ``holder["cwds"]`` — list of cwd paths seen so far
     """
     from app.services import research_runner as rr
 
-    holder = {"events": list(events)}
+    holder = {"events": list(events), "prompts": [], "cwds": []}
 
     async def _fake(prompt, cwd):
+        holder["prompts"].append(prompt)
+        holder["cwds"].append(cwd)
         for ev in holder["events"]:
             yield ev
 
@@ -251,6 +256,102 @@ async def test_post_research_too_many_files_returns_400(
     # The key check is: code indicates too-many-files.
     code = body.get("code") or body.get("detail", {}).get("code") or body.get("error")
     assert code == "files_too_many", f"unexpected 400 body: {body!r}"
+
+
+# ===========================================================================
+# Mode selector (general vs investment) — form field routing.
+# ===========================================================================
+
+
+async def test_post_research_defaults_to_general_mode(
+    app_client, research_paths, auth_session, monkeypatch
+):
+    holder = _install_fake_stream(monkeypatch, [("done", "# ok\n", 0.0, 1)])
+    _, raw = await auth_session("mode-default@example.com")
+    app_client.cookies.set("method_session", raw)
+
+    resp = await app_client.post(
+        "/api/research",
+        data={"question": "What is X?"},
+    )
+    app_client.cookies.clear()
+
+    assert resp.status_code == 201, resp.text
+    # Wait briefly for the background task to call stream().
+    for _ in range(50):
+        if holder["prompts"]:
+            break
+        await asyncio.sleep(0.02)
+    assert holder["prompts"], "stream() was never invoked"
+    prompt = holder["prompts"][0]
+    assert prompt.lstrip().startswith("/research-method-designer")
+    assert "/investment-research-planner" not in prompt
+
+
+async def test_post_research_explicit_general_mode(
+    app_client, research_paths, auth_session, monkeypatch
+):
+    holder = _install_fake_stream(monkeypatch, [("done", "# ok\n", 0.0, 1)])
+    _, raw = await auth_session("mode-general@example.com")
+    app_client.cookies.set("method_session", raw)
+
+    resp = await app_client.post(
+        "/api/research",
+        data={"question": "Q?", "mode": "general"},
+    )
+    app_client.cookies.clear()
+
+    assert resp.status_code == 201, resp.text
+    for _ in range(50):
+        if holder["prompts"]:
+            break
+        await asyncio.sleep(0.02)
+    assert holder["prompts"]
+    assert holder["prompts"][0].lstrip().startswith("/research-method-designer")
+
+
+async def test_post_research_investment_mode_uses_investment_planner(
+    app_client, research_paths, auth_session, monkeypatch
+):
+    holder = _install_fake_stream(monkeypatch, [("done", "# ok\n", 0.0, 1)])
+    _, raw = await auth_session("mode-inv@example.com")
+    app_client.cookies.set("method_session", raw)
+
+    resp = await app_client.post(
+        "/api/research",
+        data={"question": "Tesla 值不值得投？", "mode": "investment"},
+    )
+    app_client.cookies.clear()
+
+    assert resp.status_code == 201, resp.text
+    for _ in range(50):
+        if holder["prompts"]:
+            break
+        await asyncio.sleep(0.02)
+    assert holder["prompts"], "stream() was never invoked"
+    prompt = holder["prompts"][0]
+    assert prompt.lstrip().startswith("/investment-research-planner")
+    assert "/research-method-designer" not in prompt
+    # User's question still present.
+    assert "Tesla 值不值得投？" in prompt
+
+
+async def test_post_research_invalid_mode_returns_400(
+    app_client, research_paths, auth_session, monkeypatch
+):
+    _install_fake_stream(monkeypatch, [])
+    _, raw = await auth_session("mode-bad@example.com")
+    app_client.cookies.set("method_session", raw)
+
+    resp = await app_client.post(
+        "/api/research",
+        data={"question": "Q?", "mode": "bogus"},
+    )
+    app_client.cookies.clear()
+
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body.get("error") == "invalid_mode"
 
 
 # ===========================================================================
@@ -1211,6 +1312,233 @@ async def test_get_research_download_returns_404_when_failed(
     resp = await app_client.get(f"/api/research/{rid}/download")
     app_client.cookies.clear()
     assert resp.status_code == 404
+
+
+# ===========================================================================
+# DELETE /api/research/<id> — owner-scoped delete; cleans DB + filesystem.
+# ===========================================================================
+
+
+async def test_delete_research_done_removes_row_files_and_plan(
+    app_client, research_paths, auth_session, integration_db
+):
+    """DELETE on a DONE row: 204, deletes the DB row, the uploaded files
+    directory, and the plan markdown file."""
+    from app.models import ResearchRequest, UploadedFile
+
+    user, raw = await auth_session("del-done@example.com")
+    upload_root, plan_root = research_paths
+    rid = VALID_ULID_FIXTURE
+
+    # Seed plan file + upload directory with a dummy original.
+    plan_path = plan_root / f"{rid}.md"
+    plan_path.write_text("# plan\n", encoding="utf-8")
+    req_dir = upload_root / rid
+    req_dir.mkdir(parents=True, exist_ok=True)
+    stored_file = req_dir / "aaaa.md"
+    stored_file.write_text("hello", encoding="utf-8")
+
+    integration_db.add(
+        ResearchRequest(
+            id=rid,
+            user_id=user.id,
+            question="delete me",
+            status="done",
+            plan_path=str(plan_path.resolve()),
+            error_message=None,
+            model="claude-opus-4-7",
+            created_at=_utcnow_naive(),
+            completed_at=_utcnow_naive(),
+        )
+    )
+    integration_db.add(
+        UploadedFile(
+            request_id=rid,
+            original_name="src.md",
+            stored_path=str(stored_file.resolve()),
+            extracted_path=None,
+            size_bytes=5,
+            mime_type="text/markdown",
+            created_at=_utcnow_naive(),
+        )
+    )
+    await integration_db.commit()
+
+    app_client.cookies.set("method_session", raw)
+    resp = await app_client.delete(f"/api/research/{rid}")
+    app_client.cookies.clear()
+
+    assert resp.status_code == 204, resp.text
+
+    # DB: research_requests row + uploaded_files rows are gone.
+    integration_db.expire_all()
+    assert (
+        await integration_db.execute(
+            select(ResearchRequest).where(ResearchRequest.id == rid)
+        )
+    ).scalar_one_or_none() is None
+    assert (
+        await integration_db.execute(
+            select(UploadedFile).where(UploadedFile.request_id == rid)
+        )
+    ).scalars().all() == []
+
+    # Filesystem: plan file + upload directory are gone.
+    assert not plan_path.exists(), "plan file not deleted"
+    assert not req_dir.exists(), "upload dir not deleted"
+
+
+async def test_delete_research_failed_row_succeeds_with_no_plan_file(
+    app_client, research_paths, auth_session, integration_db
+):
+    """DELETE on a FAILED row (plan_path=None) → still 204, idempotent on the
+    missing plan file."""
+    from app.models import ResearchRequest
+
+    user, raw = await auth_session("del-failed@example.com")
+    rid = VALID_ULID_FIXTURE
+
+    integration_db.add(
+        ResearchRequest(
+            id=rid,
+            user_id=user.id,
+            question="Q?",
+            status="failed",
+            plan_path=None,
+            error_message="something broke",
+            model="claude-opus-4-7",
+            created_at=_utcnow_naive(),
+            completed_at=_utcnow_naive(),
+        )
+    )
+    await integration_db.commit()
+
+    app_client.cookies.set("method_session", raw)
+    resp = await app_client.delete(f"/api/research/{rid}")
+    app_client.cookies.clear()
+
+    assert resp.status_code == 204, resp.text
+    integration_db.expire_all()
+    assert (
+        await integration_db.execute(
+            select(ResearchRequest).where(ResearchRequest.id == rid)
+        )
+    ).scalar_one_or_none() is None
+
+
+async def test_delete_research_unknown_id_returns_404(
+    app_client, research_paths, auth_session
+):
+    user, raw = await auth_session("del-404@example.com")
+    app_client.cookies.set("method_session", raw)
+    resp = await app_client.delete(f"/api/research/{VALID_ULID_FIXTURE}")
+    app_client.cookies.clear()
+    assert resp.status_code == 404
+
+
+async def test_delete_research_cross_user_returns_404(
+    app_client, research_paths, auth_session, integration_db
+):
+    """Cross-user delete must return 404 (no enumeration oracle)."""
+    from app.models import ResearchRequest
+
+    owner, _ = await auth_session("del-owner@example.com")
+    _other, other_raw = await auth_session("del-other@example.com")
+    rid = VALID_ULID_FIXTURE
+
+    integration_db.add(
+        ResearchRequest(
+            id=rid,
+            user_id=owner.id,
+            question="owner's",
+            status="done",
+            plan_path=None,
+            error_message=None,
+            model="claude-opus-4-7",
+            created_at=_utcnow_naive(),
+            completed_at=_utcnow_naive(),
+        )
+    )
+    await integration_db.commit()
+
+    app_client.cookies.set("method_session", other_raw)
+    resp = await app_client.delete(f"/api/research/{rid}")
+    app_client.cookies.clear()
+    assert resp.status_code == 404
+
+    # Row still exists — owner's data not affected.
+    integration_db.expire_all()
+    assert (
+        await integration_db.execute(
+            select(ResearchRequest).where(ResearchRequest.id == rid)
+        )
+    ).scalar_one_or_none() is not None
+
+
+async def test_delete_research_pending_or_running_returns_409(
+    app_client, research_paths, auth_session, integration_db
+):
+    """In-flight rows cannot be deleted: returns 409 with a clear error code.
+
+    Reason: the background task owns the upload dir (Claude subprocess is
+    reading from it). Racing with it risks breaking the in-flight run.
+    """
+    from app.models import ResearchRequest
+
+    user, raw = await auth_session("del-busy@example.com")
+    running_rid = "01HXZK8D7Q3V0S9B4W2N6M5C7S"
+    pending_rid = "01HXZK8D7Q3V0S9B4W2N6M5C7T"
+
+    integration_db.add(
+        ResearchRequest(
+            id=running_rid,
+            user_id=user.id,
+            question="Q?",
+            status="running",
+            plan_path=None,
+            error_message=None,
+            model="claude-opus-4-7",
+            created_at=_utcnow_naive(),
+            completed_at=None,
+        )
+    )
+    integration_db.add(
+        ResearchRequest(
+            id=pending_rid,
+            user_id=user.id,
+            question="Q?",
+            status="pending",
+            plan_path=None,
+            error_message=None,
+            model="claude-opus-4-7",
+            created_at=_utcnow_naive(),
+            completed_at=None,
+        )
+    )
+    await integration_db.commit()
+
+    app_client.cookies.set("method_session", raw)
+    for rid in (running_rid, pending_rid):
+        resp = await app_client.delete(f"/api/research/{rid}")
+        assert resp.status_code == 409, f"rid={rid} got {resp.status_code}: {resp.text}"
+        body = resp.json()
+        assert body.get("error") == "request_busy"
+    app_client.cookies.clear()
+
+    # Rows must still exist.
+    integration_db.expire_all()
+    for rid in (running_rid, pending_rid):
+        assert (
+            await integration_db.execute(
+                select(ResearchRequest).where(ResearchRequest.id == rid)
+            )
+        ).scalar_one_or_none() is not None
+
+
+async def test_delete_research_without_auth_returns_401(app_client, research_paths):
+    app_client.cookies.clear()
+    resp = await app_client.delete(f"/api/research/{VALID_ULID_FIXTURE}")
+    assert resp.status_code == 401
 
 
 # ===========================================================================

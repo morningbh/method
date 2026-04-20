@@ -308,12 +308,12 @@ async def test_prompt_template_includes_uploaded_files(pinned_dirs):
         pf_cls(
             original_name="report.pdf",
             local_path="/abs/uploads/01HXZ.../aaa.extracted.md",
-            extraction_ok=True,
+            kind="text",
         ),
         pf_cls(
             original_name="notes.md",
             local_path="/abs/uploads/01HXZ.../bbb.md",
-            extraction_ok=True,
+            kind="text",
         ),
     ]
     out = research_runner._render_prompt("my question", files)
@@ -324,6 +324,9 @@ async def test_prompt_template_includes_uploaded_files(pinned_dirs):
     assert "/abs/uploads/01HXZ.../bbb.md" in out
     # Chinese header from the template is present.
     assert "用户上传了以下资料" in out
+    # text-kind files get no suffix annotation.
+    assert "解析失败" not in out
+    assert "PDF 文本层为空" not in out
 
 
 # ===========================================================================
@@ -340,7 +343,8 @@ async def test_prompt_template_omits_files_section_when_empty(pinned_dirs):
 
 
 # ===========================================================================
-# #9. Prompt template: extraction_ok=False → marked as (解析失败，已忽略)
+# #9. Prompt template: kind="failed" (e.g. docx extraction failed) →
+#     marked as (解析失败，已忽略)
 # ===========================================================================
 
 
@@ -350,14 +354,73 @@ async def test_prompt_template_notes_extraction_failed_files(pinned_dirs):
     pf_cls = research_runner._PromptFile
     files = [
         pf_cls(
-            original_name="weird.pdf",
-            local_path="/abs/uploads/01HXZ.../weird.pdf",
-            extraction_ok=False,
+            original_name="weird.docx",
+            local_path="/abs/uploads/01HXZ.../weird.docx",
+            kind="failed",
         ),
     ]
     out = research_runner._render_prompt("Q?", files)
-    assert "weird.pdf" in out
+    assert "weird.docx" in out
     assert "解析失败，已忽略" in out
+
+
+# ===========================================================================
+# #9b. Prompt template: kind="pdf_scan" (scanned PDF) → planner is told to
+#      Read the original PDF directly, NOT to ignore it.
+# ===========================================================================
+
+
+async def test_prompt_template_instructs_direct_read_for_scanned_pdf(pinned_dirs):
+    from app.services import research_runner
+
+    pf_cls = research_runner._PromptFile
+    files = [
+        pf_cls(
+            original_name="scan.pdf",
+            local_path="/abs/uploads/01HXZ.../scan.pdf",
+            kind="pdf_scan",
+        ),
+    ]
+    out = research_runner._render_prompt("Q?", files)
+    assert "scan.pdf" in out
+    assert "/abs/uploads/01HXZ.../scan.pdf" in out
+    # Scanned PDFs are NOT ignored — planner is instructed to Read them.
+    assert "解析失败，已忽略" not in out
+    assert "PDF 文本层为空" in out
+    assert "Read" in out
+
+
+# ===========================================================================
+# #9c. _files_to_prompt_files: an UploadedFile for a .pdf with
+#      extracted_path=None (scanned PDF path) → kind="pdf_scan" with
+#      local_path pointing at the original PDF.
+# ===========================================================================
+
+
+async def test_files_to_prompt_files_classifies_scanned_pdf_as_pdf_scan(pinned_dirs):
+    from app.services import research_runner
+
+    class _Row:
+        def __init__(self, original_name, stored_path, extracted_path):
+            self.original_name = original_name
+            self.stored_path = stored_path
+            self.extracted_path = extracted_path
+
+    rows = [
+        _Row("scan.pdf", "/abs/uploads/rid/x.pdf", None),          # scanned pdf
+        _Row("paper.pdf", "/abs/uploads/rid/y.pdf", "/abs/uploads/rid/y.extracted.md"),
+        _Row("notes.md", "/abs/uploads/rid/n.md", None),
+        _Row("resume.docx", "/abs/uploads/rid/r.docx", None),      # docx ext failed
+    ]
+    out = research_runner._files_to_prompt_files(rows)
+    by_name = {pf.original_name: pf for pf in out}
+    assert by_name["scan.pdf"].kind == "pdf_scan"
+    assert by_name["scan.pdf"].local_path == "/abs/uploads/rid/x.pdf"
+    assert by_name["paper.pdf"].kind == "text"
+    assert by_name["paper.pdf"].local_path == "/abs/uploads/rid/y.extracted.md"
+    assert by_name["notes.md"].kind == "text"
+    assert by_name["notes.md"].local_path == "/abs/uploads/rid/n.md"
+    assert by_name["resume.docx"].kind == "failed"
 
 
 # ===========================================================================
@@ -647,7 +710,7 @@ async def test_prompt_template_preserves_malicious_user_content_literally(
         pf_cls(
             original_name="../../etc/passwd",
             local_path="/abs/uploads/01HXZ.../attack.md",
-            extraction_ok=True,
+            kind="text",
         ),
     ]
     out = research_runner._render_prompt(malicious_q, files)
@@ -657,3 +720,149 @@ async def test_prompt_template_preserves_malicious_user_content_literally(
     assert "{{7*7}}" in out or "{% " in malicious_q, "nested Jinja evaluated"
     assert "49" not in out.split("{{7*7}}")[0] if "{{7*7}}" in out else True
     assert "../../etc/passwd" in out
+
+
+# ===========================================================================
+# Mode selector (general vs investment) — prompt template routing.
+# ===========================================================================
+
+
+async def test_render_prompt_default_mode_uses_research_method_designer(pinned_dirs):
+    from app.services import research_runner
+
+    out = research_runner._render_prompt("Q?", [])
+    assert out.lstrip().startswith("/research-method-designer")
+    assert "/investment-research-planner" not in out
+
+
+async def test_render_prompt_mode_general_uses_research_method_designer(pinned_dirs):
+    from app.services import research_runner
+
+    out = research_runner._render_prompt("Q?", [], mode="general")
+    assert out.lstrip().startswith("/research-method-designer")
+    assert "/investment-research-planner" not in out
+
+
+async def test_render_prompt_mode_investment_uses_investment_research_planner(pinned_dirs):
+    from app.services import research_runner
+
+    out = research_runner._render_prompt("Q?", [], mode="investment")
+    # Investment template must load the investment-research-planner skill,
+    # NOT the generic router.
+    assert out.lstrip().startswith("/investment-research-planner")
+    assert "/research-method-designer" not in out
+    # Question still rendered, Chinese output constraints still apply.
+    assert "Q?" in out
+    assert "全中文输出" in out
+
+
+async def test_render_prompt_rejects_unknown_mode(pinned_dirs):
+    from app.services import research_runner
+
+    with pytest.raises(ValueError):
+        research_runner._render_prompt("Q?", [], mode="bogus")
+
+
+# ---------------------------------------------------------------------------
+# User-friendliness: the prompt must instruct the planner to AVOID internal
+# classification labels ("Type A/B/C/D" / "类型 A/B/C/D") and the "问题类型
+# 分类" standalone section. These drift silently when someone edits the
+# template, so pin them with string-level assertions.
+# ---------------------------------------------------------------------------
+
+
+async def test_general_template_forbids_internal_type_labels(pinned_dirs):
+    from app.services import research_runner
+
+    out = research_runner._render_prompt("Q?", [], mode="general")
+    # Rule 4: forbid Type A/B/C/D labels.
+    assert "Type A" in out and "类型 A" in out, (
+        "general template must explicitly list the forbidden type labels"
+    )
+    # Rule 5: mention jargon-softening.
+    assert "术语口语化" in out
+    # Rule 6: skip the standalone classification section.
+    assert "不要单独开" in out or "不单独开" in out
+    assert "问题类型分类" in out
+
+
+async def test_investment_template_forbids_internal_axis_labels(pinned_dirs):
+    from app.services import research_runner
+
+    out = research_runner._render_prompt("Q?", [], mode="investment")
+    # Rule 4: forbid Axis / thesis labels.
+    assert "Axis" in out
+    assert "Long thesis" in out or "Short thesis" in out
+    # Rule 5: mention implementation-term softening.
+    assert "playbook" in out  # named as forbidden
+    assert "术语口语化" in out
+    # Rule 6: skip the standalone "投资决策类型分类" section.
+    assert "投资决策类型分类" in out
+
+
+async def test_prompt_template_handles_image_kind(pinned_dirs):
+    """Images are surfaced with a hint telling the planner to Read them
+    visually, same pattern as ``pdf_scan`` but labeled as image."""
+    from app.services import research_runner
+
+    pf_cls = research_runner._PromptFile
+    files = [
+        pf_cls(
+            original_name="shot.png",
+            local_path="/abs/uploads/rid/s.png",
+            kind="image",
+        ),
+    ]
+    out = research_runner._render_prompt("Q?", files)
+    assert "shot.png" in out
+    assert "图片文件" in out
+    assert "Read" in out
+    # NOT marked as failed or as a PDF.
+    assert "解析失败，已忽略" not in out
+    assert "PDF 文本层为空" not in out
+
+
+async def test_files_to_prompt_files_classifies_images_as_image_kind(pinned_dirs):
+    from app.services import research_runner
+
+    class _Row:
+        def __init__(self, original_name, stored_path, extracted_path):
+            self.original_name = original_name
+            self.stored_path = stored_path
+            self.extracted_path = extracted_path
+
+    rows = [
+        _Row("a.png", "/abs/a.png", None),
+        _Row("b.jpg", "/abs/b.jpg", None),
+        _Row("c.jpeg", "/abs/c.jpeg", None),
+        _Row("d.webp", "/abs/d.webp", None),
+        _Row("e.gif", "/abs/e.gif", None),
+        _Row("f.pdf", "/abs/f.pdf", None),  # should still be pdf_scan
+        _Row("g.md", "/abs/g.md", None),    # still text
+    ]
+    out = research_runner._files_to_prompt_files(rows)
+    by_name = {pf.original_name: pf for pf in out}
+    for img in ("a.png", "b.jpg", "c.jpeg", "d.webp", "e.gif"):
+        assert by_name[img].kind == "image", f"{img} → {by_name[img].kind}"
+    assert by_name["f.pdf"].kind == "pdf_scan"
+    assert by_name["g.md"].kind == "text"
+
+
+async def test_investment_template_surfaces_uploaded_files_same_as_general(pinned_dirs):
+    """Investment template must render uploaded files with the same three
+    kinds (text / pdf_scan / failed), so users get identical file handling
+    regardless of research mode."""
+    from app.services import research_runner
+
+    pf_cls = research_runner._PromptFile
+    files = [
+        pf_cls("notes.md", "/abs/uploads/rid/n.md", "text"),
+        pf_cls("scan.pdf", "/abs/uploads/rid/s.pdf", "pdf_scan"),
+        pf_cls("resume.docx", "/abs/uploads/rid/r.docx", "failed"),
+    ]
+    out = research_runner._render_prompt("Q?", files, mode="investment")
+    assert "notes.md" in out
+    assert "scan.pdf" in out
+    assert "PDF 文本层为空" in out
+    assert "resume.docx" in out
+    assert "解析失败，已忽略" in out

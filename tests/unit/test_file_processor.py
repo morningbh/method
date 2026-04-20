@@ -29,6 +29,10 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 SAMPLE_PDF = FIXTURES / "sample.pdf"
 SAMPLE_DOCX = FIXTURES / "sample.docx"
+SAMPLE_PPTX = FIXTURES / "sample.pptx"
+SAMPLE_XLSX = FIXTURES / "sample.xlsx"
+SAMPLE_PNG = FIXTURES / "sample.png"
+SAMPLE_JPG = FIXTURES / "sample.jpg"
 SAMPLE_MD = FIXTURES / "sample.md"
 SAMPLE_TXT = FIXTURES / "sample.txt"
 ENCRYPTED_PDF = FIXTURES / "encrypted.pdf"
@@ -302,18 +306,27 @@ async def test_validate_limits_too_many_files_raises() -> None:
 async def test_validate_limits_file_too_large_raises() -> None:
     from app.services.file_processor import LimitExceededError, validate_upload_limits
 
-    # 31 MB, exceeds the 30 MB per-file cap from design §3.
-    files = [_FakeUploadFile("big.pdf", 31 * 1024 * 1024)]
+    # 51 MB, exceeds the 50 MB per-file cap (bumped 2026-04).
+    files = [_FakeUploadFile("big.pdf", 51 * 1024 * 1024)]
     with pytest.raises(LimitExceededError) as excinfo:
         await validate_upload_limits(files)
     assert excinfo.value.detail["code"] == "file_too_large"
 
 
+async def test_validate_limits_at_per_file_cap_accepted() -> None:
+    """A file exactly at 50 MB must be accepted."""
+    from app.services.file_processor import validate_upload_limits
+
+    files = [_FakeUploadFile("exact.pdf", 50 * 1024 * 1024)]
+    await validate_upload_limits(files)  # no raise = pass
+
+
 async def test_validate_limits_total_too_large_raises() -> None:
     from app.services.file_processor import LimitExceededError, validate_upload_limits
 
-    # 10 × 11 MB = 110 MB, exceeds the 100 MB total cap (design §3).
-    files = [_FakeUploadFile(f"f{i}.pdf", 11 * 1024 * 1024) for i in range(10)]
+    # 3 × 40 MB = 120 MB, exceeds the 100 MB total cap (design §3). Each
+    # individual file is under the 50 MB per-file cap.
+    files = [_FakeUploadFile(f"f{i}.pdf", 40 * 1024 * 1024) for i in range(3)]
     with pytest.raises(LimitExceededError) as excinfo:
         await validate_upload_limits(files)
     assert excinfo.value.detail["code"] == "total_too_large"
@@ -371,6 +384,128 @@ async def test_cleanup_request_idempotent_for_missing_dir(upload_dir: Path) -> N
 # #20 (flagged in design §10 as living with the file_processor tests, not
 # the models tests).  Malformed request_id ⇒ ValueError (path traversal
 # defense, design §2).
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# PPTX: stored + extracted to sibling .extracted.md with per-slide sections
+# ---------------------------------------------------------------------------
+
+
+async def test_save_pptx_stores_and_extracts_text(upload_dir: Path) -> None:
+    from app.services.file_processor import save_and_extract
+
+    content = SAMPLE_PPTX.read_bytes()
+    result = await save_and_extract(VALID_ULID, "sample.pptx", content)
+
+    assert result.extraction_ok is True
+    assert result.stored_path.exists()
+    assert result.stored_path.read_bytes() == content
+    assert result.extracted_path is not None
+    assert result.extracted_path.exists()
+    assert result.extracted_path.suffix == ".md"
+    extracted = result.extracted_path.read_text(encoding="utf-8")
+    # Sentinel text from fixture generator + per-slide section header.
+    assert "Hello from Method test PPTX" in extracted
+    assert "## Slide 1" in extracted
+
+
+# ---------------------------------------------------------------------------
+# XLSX: stored + extracted as per-sheet tab-separated text
+# ---------------------------------------------------------------------------
+
+
+async def test_save_xlsx_stores_and_extracts_text(upload_dir: Path) -> None:
+    from app.services.file_processor import save_and_extract
+
+    content = SAMPLE_XLSX.read_bytes()
+    result = await save_and_extract(VALID_ULID, "sample.xlsx", content)
+
+    assert result.extraction_ok is True
+    assert result.stored_path.exists()
+    assert result.extracted_path is not None
+    extracted = result.extracted_path.read_text(encoding="utf-8")
+    assert "## Sheet: Sheet1" in extracted
+    assert "Hello from Method test XLSX" in extracted
+    # Tab-separated cells on row 1: "Hello..." \t "Slide two cell"
+    assert "\t" in extracted
+
+
+async def test_xlsx_extraction_truncates_large_sheets(
+    upload_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """xlsx extractor must cap rows per sheet to protect the prompt budget."""
+    from openpyxl import Workbook
+
+    import app.services.file_processor as fp
+
+    # Build a workbook with 600 rows; our cap is 500.
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Big"
+    for i in range(600):
+        ws.cell(row=i + 1, column=1, value=f"row-{i}")
+    xlsx_path = upload_dir / "big.xlsx"
+    wb.save(str(xlsx_path))
+
+    text = fp._extract_xlsx(xlsx_path)
+    assert "row-0" in text
+    assert "row-499" in text
+    assert "row-500" not in text
+    assert "已截断" in text
+
+
+# ---------------------------------------------------------------------------
+# PNG / JPG: image files are stored as-is with no extraction
+# ---------------------------------------------------------------------------
+
+
+async def test_save_png_stores_without_extraction(upload_dir: Path) -> None:
+    from app.services.file_processor import save_and_extract
+
+    content = SAMPLE_PNG.read_bytes()
+    result = await save_and_extract(VALID_ULID, "sample.png", content)
+
+    assert result.extraction_ok is True
+    assert result.extracted_path is None
+    assert result.stored_path.exists()
+    assert result.stored_path.read_bytes() == content
+    assert result.mime_type == "image/png"
+
+
+async def test_save_jpg_stores_without_extraction(upload_dir: Path) -> None:
+    from app.services.file_processor import save_and_extract
+
+    content = SAMPLE_JPG.read_bytes()
+    result = await save_and_extract(VALID_ULID, "sample.jpg", content)
+
+    assert result.extraction_ok is True
+    assert result.extracted_path is None
+    assert result.stored_path.exists()
+    assert result.mime_type == "image/jpeg"
+
+
+async def test_png_with_wrong_extension_mime_mismatch(upload_dir: Path) -> None:
+    """A PNG payload masquerading as .jpg must be rejected."""
+    from app.services.file_processor import LimitExceededError, save_and_extract
+
+    png_bytes = SAMPLE_PNG.read_bytes()
+    with pytest.raises(LimitExceededError) as excinfo:
+        await save_and_extract(VALID_ULID, "fake.jpg", png_bytes)
+    assert excinfo.value.detail["code"] == "mime_mismatch"
+
+
+async def test_image_extensions_in_allowed_set() -> None:
+    """Guard against silent drift: the allowed-extension set must include
+    every image format we document as supported."""
+    import app.services.file_processor as fp
+
+    for ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+        assert ext in fp._ALLOWED_EXTS, f"missing {ext} from _ALLOWED_EXTS"
+
+
+# ---------------------------------------------------------------------------
+# Trust-boundary: invalid ULID still blocks filesystem operations.
 # ---------------------------------------------------------------------------
 
 

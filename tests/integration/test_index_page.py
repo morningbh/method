@@ -70,10 +70,15 @@ async def test_index_html_has_file_drop_zone(app_client, auth_session):
     body = resp.text
     assert 'id="drop-zone"' in body
     assert 'id="file-input"' in body
-    # accept attribute lists at least the 4 expected extensions
+    # accept attribute lists every supported extension: 6 office + 5 image.
     assert 'accept=' in body
-    for ext in (".md", ".txt", ".pdf", ".docx"):
-        assert ext in body
+    for ext in (
+        ".md", ".txt", ".pdf", ".docx", ".pptx", ".xlsx",
+        ".png", ".jpg", ".jpeg", ".webp", ".gif",
+    ):
+        assert ext in body, f"index page missing accept entry for {ext}"
+    # Hint text reflects the new 50 MB cap.
+    assert "50 MB" in body
 
 
 # ===========================================================================
@@ -111,6 +116,30 @@ async def test_index_html_form_targets_api_research(
     body = resp.text
     assert 'id="research-form"' in body
     assert "/static/app.js" in body
+
+
+# ===========================================================================
+# Mode selector radio group (general default / investment beta)
+# ===========================================================================
+
+
+async def test_index_html_has_mode_radio_group(app_client, auth_session):
+    _user, raw = await auth_session("mode-ui@example.com")
+    app_client.cookies.set("method_session", raw)
+    resp = await app_client.get("/")
+    app_client.cookies.clear()
+
+    body = resp.text
+    # Two radio inputs named "mode" with the two legal values.
+    assert 'name="mode"' in body
+    assert 'value="general"' in body
+    assert 'value="investment"' in body
+    # Default is general (marked as checked).
+    assert 'value="general" checked' in body or 'checked value="general"' in body
+    # Labels visible to the user.
+    assert "通用问题" in body
+    assert "投资问题" in body
+    assert "beta" in body.lower()
 
 
 # ===========================================================================

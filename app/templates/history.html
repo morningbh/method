@@ -6,12 +6,26 @@
   {% if items %}
   <ul class="cards">
     {% for item in items %}
-    <li>
+    <li class="card-row" data-row-id="{{ item.request_id }}">
       <a class="card" href="/history/{{ item.request_id }}">
         <span class="status-dot status-{{ item.status }}">&#9679;</span>
         <span class="question">{{ item.question[:80] }}{% if item.question|length > 80 %}…{% endif %}</span>
         <span class="meta">{{ item.created_at_display }} · {{ item.n_files }} files · {{ item.cost_display }}</span>
       </a>
+      <button type="button" class="card-delete"
+              data-request-id="{{ item.request_id }}"
+              aria-label="删除"
+              title="删除这条记录">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+             stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+             stroke-linejoin="round" aria-hidden="true">
+          <path d="M2.5 4h11"></path>
+          <path d="M6 4V2.5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1V4"></path>
+          <path d="M3.5 4l.8 8.5a1.5 1.5 0 0 0 1.5 1.4h4.4a1.5 1.5 0 0 0 1.5-1.4L12.5 4"></path>
+          <path d="M6.5 7v4"></path>
+          <path d="M9.5 7v4"></path>
+        </svg>
+      </button>
     </li>
     {% endfor %}
   </ul>

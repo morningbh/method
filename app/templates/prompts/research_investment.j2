@@ -1,0 +1,36 @@
+/investment-research-planner
+
+用户的研究问题：
+{{ question }}
+
+{% if uploaded_files -%}
+用户上传了以下资料（相对于当前工作目录）：
+{% for f in uploaded_files -%}
+{% if f.kind == "pdf_scan" -%}
+- {{ f.original_name }} → {{ f.local_path }} (PDF 文本层为空，可能为扫描件/图片 PDF；请直接用 Read 工具打开原 PDF，Claude Read 支持 PDF 视觉读取)
+{% elif f.kind == "image" -%}
+- {{ f.original_name }} → {{ f.local_path }} (图片文件；请用 Read 工具直接视觉读取)
+{% elif f.kind == "failed" -%}
+- {{ f.original_name }} → {{ f.local_path }} (解析失败，已忽略)
+{% else -%}
+- {{ f.original_name }} → {{ f.local_path }}
+{% endif -%}
+{% endfor %}
+请根据需要用 Read 工具阅读这些文件，把相关内容纳入"已有材料"部分。
+
+{% endif -%}
+## 输出硬性要求（优先于 skill 的其它表达风格）
+
+1. **全中文输出**。不要出现任何英文句子、英文段落、英文前言、英文总结。涉及的英文专有名词（公司名、股票代码、技术名词）可保留原文，但句子主体必须用中文。
+2. **不要任何 meta 解释/前言**。不写"Using the investment-research-planner skill..."、"Let me produce..."、"I'll treat this as..."、"Below is..." 之类的元话术。直接从第一节标题开始。
+3. **移动端友好的排版**。读者用手机读。因此：
+   - **表格用得克制**：只在真正需要并排对比 3+ 项时才用表格；表格最多 3 列。能改成短条目列表就改。
+   - 段落短，一段 2-4 句。长句断开。
+   - 标题层级清晰（`##` / `###`），避免四级标题。
+   - 代码块、引号块少用，必要时用。
+   - 列表用 `-` 或 `1.`，缩进不超过 2 层。
+4. **不要使用内部分类符号或英文轴标签**。禁止在输出里出现 "Axis 1"、"Axis 2"、"Primary early stage"、"Primary growth stage"、"Secondary public equity"、"Long thesis"、"Short thesis" 等英文轴 / 标签记号，也不要出现 "类型 A / B / C / D" 这种简写。需要提及市场阶段 / 投资方向时用自然中文（如"一级市场早期"、"一级市场成长期"、"二级市场公开股票"；"长线持有"、"短线做空"），或一句话自然带过。
+5. **术语口语化**。避免内部实现术语 / 学术黑话：不写 "playbook"、"INDEX-loading"、"evaluator"、"benchmark"、"JR 维度"这种记号；改用"参考资料"、"加载相关参考资料"、"评估环节"、"参考案例"、"10 个研究维度"等中文表达。其它实现细节（skill 内部叫法、评分量表、剧本加载流程）都不要暴露给用户。
+6. **不要单独开"投资决策类型分类"章节**。skill 的 Step 0（市场阶段 + 投资方向分类）是你内部用来挑 playbook 和确定研究深浅的依据，不要作为独立一级章节写给用户看；如需让用户知道这是什么类型的投资研究，用一句话嵌进开头的"研究方案概述"或"问题重述"即可。JR 10 个维度的主体结构仍然按 skill 要求产出。
+
+直接按 investment-research-planner 的 workflow（内部：Step 0 投资决策类型分类 → Step 1 加载相关参考资料 → Step 2 逐维度研究计划 → Step 3 证据设计 → Step 4 输出）产出完整的中文投资研究方案 markdown，但严格遵守上述六条硬性要求；其中第 6 条允许你省略"投资决策类型分类"章节。

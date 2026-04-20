@@ -118,19 +118,59 @@ _PROMPT_ENV = Environment(
     keep_trailing_newline=True,
 )
 
+# Research mode → prompt template file name. Used by ``_render_prompt`` to
+# route the generated prompt to the right skill: ``general`` drives the
+# ``research-method-designer`` router, ``investment`` drives the
+# ``investment-research-planner``.
+_TEMPLATE_BY_MODE: dict[str, str] = {
+    "general": "research.j2",
+    "investment": "research_investment.j2",
+}
+
 
 @dataclass(frozen=True)
 class _PromptFile:
-    """Shape consumed by ``research.j2``."""
+    """Shape consumed by ``research.j2``.
+
+    ``kind`` is one of:
+      - ``"text"``      — plain-text content at ``local_path`` (extracted .md,
+                          or a native .md/.txt upload). Read directly.
+      - ``"pdf_scan"``  — a PDF whose text layer was empty (likely a scanned
+                          / image-only PDF). ``local_path`` points at the
+                          original ``.pdf``; Claude's ``Read`` tool handles
+                          PDFs natively (incl. scanned), so the planner is
+                          told to read it directly instead of ignoring it.
+      - ``"image"``     — a native image upload (png/jpg/webp/gif). No
+                          server-side extraction; Claude's ``Read`` reads
+                          images visually.
+      - ``"failed"``    — extraction failed for a binary format Claude can't
+                          parse (e.g. .docx / .pptx / .xlsx). Planner is
+                          told to ignore.
+    """
 
     original_name: str
     local_path: str
-    extraction_ok: bool
+    kind: str
 
 
-def _render_prompt(question: str, files: list[_PromptFile]) -> str:
-    """Render the claude prompt from ``question`` + ``files``."""
-    template = _PROMPT_ENV.get_template("research.j2")
+def _render_prompt(
+    question: str,
+    files: list[_PromptFile],
+    mode: str = "general",
+) -> str:
+    """Render the claude prompt from ``question`` + ``files`` + ``mode``.
+
+    ``mode`` selects the template / entry-point skill:
+      - ``"general"``    → ``research.j2`` → ``/research-method-designer``
+      - ``"investment"`` → ``research_investment.j2`` → ``/investment-research-planner``
+    """
+    try:
+        template_name = _TEMPLATE_BY_MODE[mode]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown research mode: {mode!r} (known: {sorted(_TEMPLATE_BY_MODE)})"
+        ) from exc
+    template = _PROMPT_ENV.get_template(template_name)
     return template.render(question=question, uploaded_files=files)
 
 
@@ -188,29 +228,40 @@ async def _load_files(session, request_id: str) -> list[UploadedFile]:
     return list(result.scalars().all())
 
 
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+
+
 def _files_to_prompt_files(rows: list[UploadedFile]) -> list[_PromptFile]:
     """Convert UploadedFile rows into _PromptFile entries for the template.
 
-    Uses extracted_path when available (pdf/docx after successful extraction),
-    otherwise the stored_path (md/txt, or pdf/docx with extraction failure).
+    Four-way categorization:
+      - extracted_path set → ``text`` (plain-text extracted markdown)
+      - native text upload (.md / .txt) → ``text`` (stored_path)
+      - image (.png / .jpg / .jpeg / .webp / .gif) → ``image`` (stored_path);
+        Claude's ``Read`` tool reads images visually.
+      - pdf whose text layer was empty → ``pdf_scan`` (stored_path); Claude
+        reads PDFs natively incl. scanned ones.
+      - anything else without extraction (e.g. docx / pptx / xlsx where
+        extraction failed) → ``failed`` (told to ignore).
     """
-    ext_needs_extract = {".pdf", ".docx"}
     out: list[_PromptFile] = []
     for row in rows:
         ext = Path(row.original_name).suffix.lower()
         if row.extracted_path:
-            local = row.extracted_path
-            ok = True
+            local, kind = row.extracted_path, "text"
+        elif ext in (".md", ".txt"):
+            local, kind = row.stored_path, "text"
+        elif ext in _IMAGE_EXTS:
+            local, kind = row.stored_path, "image"
+        elif ext == ".pdf":
+            local, kind = row.stored_path, "pdf_scan"
         else:
-            local = row.stored_path
-            # md/txt never need extraction — always OK. pdf/docx without
-            # extracted_path means extraction failed.
-            ok = ext not in ext_needs_extract
+            local, kind = row.stored_path, "failed"
         out.append(
             _PromptFile(
                 original_name=row.original_name,
                 local_path=local,
-                extraction_ok=ok,
+                kind=kind,
             )
         )
     return out
@@ -235,9 +286,16 @@ def _log_task_exception(task: asyncio.Task) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def run_research(request_id: str) -> None:
-    """Router-facing dispatcher — spawn background task for ``request_id``."""
-    task = asyncio.create_task(_run_research(request_id))
+async def run_research(request_id: str, mode: str = "general") -> None:
+    """Router-facing dispatcher — spawn background task for ``request_id``.
+
+    ``mode`` picks the prompt template / entry-point skill. Router validates
+    the value before calling; unknown values surface as a ``ValueError`` from
+    ``_render_prompt`` inside the background task (logged via the task's
+    exception callback — request transitions to ``failed`` via the rescue
+    path).
+    """
+    task = asyncio.create_task(_run_research(request_id, mode))
     _TASKS.add(task)
     task.add_done_callback(_TASKS.discard)
     task.add_done_callback(_log_task_exception)
@@ -248,7 +306,7 @@ async def run_research(request_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _run_research(request_id: str) -> None:
+async def _run_research(request_id: str, mode: str = "general") -> None:
     """Drive one research request through pending→running→{done,failed}.
 
     Design §3: Block A flips status to running (short-lived session); Block B
@@ -275,7 +333,7 @@ async def _run_research(request_id: str) -> None:
         return
 
     # Build prompt outside any session.
-    prompt = _render_prompt(question, prompt_files)
+    prompt = _render_prompt(question, prompt_files, mode=mode)
     cwd = (Path(_config.settings.upload_dir) / request_id).resolve()
     cwd.mkdir(parents=True, exist_ok=True)  # 0-file case
 

@@ -32,6 +32,25 @@ Project-specific hard constraints are listed below. In case of conflict, the str
    otherwise). These hit real SMTP and real `claude` subprocess and are too
    slow/expensive for the default `make test` loop.
 
+## 10 步流程的项目级调整（2026-04-20 起）
+
+全局 `CLAUDE.md` 的 10 步流程默认有两处人工审核门：Step 2b（设计评审）+ Step 5（测试评审）。**Method 项目把 Step 5 删掉**：
+
+- **保留 Step 2b**：用户在飞书文档里对功能设计和技术方案审核通过。这一步就代表了用户对本轮工作的全部确认。
+- **跳过 Step 5**：测试评审**不再需要人工 gate**。测试由 Step 3（tester sub-agent）+ Step 4（test-quality-checker，含设计覆盖度 BLOCKING）双重把关即可。
+
+调整后的执行序列：
+
+```
+Step 0 preflight → Step 1 env check → Step 2a design + design-check
+→ Step 2b 人工评审（飞书）→ Step 3 tester → Step 4 test-quality-check
+→ Step 6 backup+branch → Step 7 dev loop → Step 8 code review → Step 9 DEV_LOG
+```
+
+（Step 2b 之后从 Step 3 直接跳到 Step 6，中间的 Step 5 省去。）
+
+原则：Step 2b 已覆盖用户对"做什么 + 怎么做"的确认意图，测试是实现细节的一部分，不再需要二次人工确认。
+
 ## Component map
 
 ```

@@ -9,12 +9,24 @@
   <form id="research-form" enctype="multipart/form-data">
     <textarea id="question" name="question" data-autofocus required
               placeholder="把研究问题写在这里..."></textarea>
+    <fieldset class="mode-selector">
+      <legend class="visually-hidden">研究类型</legend>
+      <label class="mode-option">
+        <input type="radio" name="mode" value="general" checked>
+        <span>通用问题</span>
+      </label>
+      <label class="mode-option">
+        <input type="radio" name="mode" value="investment">
+        <span>投资问题 <em class="mode-tag">beta</em></span>
+      </label>
+    </fieldset>
     <div id="drop-zone" class="drop-zone">
-      <span class="dz-desktop">拖拽上传资料，或 </span>
+      <span class="dz-desktop">拖拽上传资料 / 粘贴截图，或 </span>
       <button type="button" id="pick-files">选择文件</button>
       <input id="file-input" type="file" name="files"
-             accept=".md,.txt,.pdf,.docx" multiple hidden>
-      <p class="hint">支持 .md / .txt / .pdf / .docx · 最多 20 个 · 单文件 &le; 30 MB</p>
+             accept=".md,.txt,.pdf,.docx,.pptx,.xlsx,.png,.jpg,.jpeg,.webp,.gif"
+             multiple hidden>
+      <p class="hint">支持 .md / .txt / .pdf / .docx / .pptx / .xlsx / .png / .jpg / .webp / .gif · 最多 20 个 · 单文件 &le; 50 MB · 图片建议 &le; 10 MB</p>
     </div>
     <ul id="chips" class="chips"></ul>
     <div id="submit-row">

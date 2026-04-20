@@ -45,16 +45,31 @@ logger = logging.getLogger("method.file_processor")
 # Crockford base32 (26 chars, no I/L/O/U). Matches the canonical ULID spec.
 _ULID_RE = re.compile(r"^[0-9A-HJKMNP-TV-Z]{26}$")
 
-_ALLOWED_EXTS = frozenset({".md", ".txt", ".pdf", ".docx"})
+_ALLOWED_EXTS = frozenset(
+    {
+        # Text
+        ".md", ".txt",
+        # Office
+        ".pdf", ".docx", ".pptx", ".xlsx",
+        # Images (Claude Read handles visually, no server-side extraction)
+        ".png", ".jpg", ".jpeg", ".webp", ".gif",
+    }
+)
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif"})
+
 _MAX_FILES = 20
-_MAX_FILE_BYTES = 30 * 1024 * 1024
+_MAX_FILE_BYTES = 50 * 1024 * 1024
 _MAX_TOTAL_BYTES = 100 * 1024 * 1024
 _EXTRACTION_TIMEOUT = 10.0
 _SNIFF_BYTES = 2048
 
+# xlsx extraction: truncate each sheet to this many rows. Protects the prompt
+# token budget — a 10 MB spreadsheet can otherwise produce multi-MB of text.
+_XLSX_MAX_ROWS_PER_SHEET = 500
+
 # Per-extension accepted sniffed MIMEs (design §3). libmagic often reports
-# ``application/zip`` for docx because the outer container is a zip — accept
-# both that and the fully-qualified OOXML type.
+# ``application/zip`` for OOXML formats (docx/pptx/xlsx) because the outer
+# container is a zip — accept both that and the fully-qualified OOXML type.
 _ACCEPTED_MIMES: dict[str, frozenset[str]] = {
     ".md": frozenset({"text/plain", "text/markdown", "text/x-markdown"}),
     ".txt": frozenset({"text/plain"}),
@@ -65,6 +80,23 @@ _ACCEPTED_MIMES: dict[str, frozenset[str]] = {
             "application/zip",
         }
     ),
+    ".pptx": frozenset(
+        {
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/zip",
+        }
+    ),
+    ".xlsx": frozenset(
+        {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/zip",
+        }
+    ),
+    ".png": frozenset({"image/png"}),
+    ".jpg": frozenset({"image/jpeg"}),
+    ".jpeg": frozenset({"image/jpeg"}),
+    ".webp": frozenset({"image/webp"}),
+    ".gif": frozenset({"image/gif"}),
 }
 
 # Module-level singleton — magic.Magic is not cheap to construct and is
@@ -181,13 +213,22 @@ async def save_and_extract(
     stored_path = (req_dir / f"{stem}{ext}").resolve()
     stored_path.write_bytes(content)
 
-    # 5. Extraction for pdf/docx with timeout + broad failure catch.
+    # 5. Extraction with timeout + broad failure catch.
+    #    md / txt / images: nothing to extract — stored as-is. For images,
+    #    Claude's Read tool handles visual reading at planning time.
+    #    pdf / docx / pptx / xlsx: extract to a sibling .extracted.md so the
+    #    downstream claude subprocess only needs plain text (HARNESS §3).
     extracted_path: Path | None = None
-    extraction_ok = True  # md/txt: nothing to extract
+    extraction_ok = True
 
-    if ext in (".pdf", ".docx"):
-        extractor = _extract_pdf if ext == ".pdf" else _extract_docx
-        text = await _run_extractor(extractor, stored_path)
+    _EXTRACTORS = {
+        ".pdf": _extract_pdf,
+        ".docx": _extract_docx,
+        ".pptx": _extract_pptx,
+        ".xlsx": _extract_xlsx,
+    }
+    if ext in _EXTRACTORS:
+        text = await _run_extractor(_EXTRACTORS[ext], stored_path)
         if text:
             extracted_path = (req_dir / f"{stem}.extracted.md").resolve()
             extracted_path.write_text(text, encoding="utf-8")
@@ -260,3 +301,68 @@ def _extract_docx(path: Path) -> str:
     from docx import Document
 
     return "\n".join(p.text for p in Document(path).paragraphs).strip()
+
+
+def _extract_pptx(path: Path) -> str:
+    """Extract text from a .pptx via python-pptx. Blocking — call in executor.
+
+    Emits per-slide sections with shape text + speaker notes. No slide-image
+    OCR — that's Claude Read's job if the user needs it.
+    """
+    from pptx import Presentation
+
+    prs = Presentation(str(path))
+    out: list[str] = []
+    for i, slide in enumerate(prs.slides, 1):
+        out.append(f"## Slide {i}")
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            for para in shape.text_frame.paragraphs:
+                txt = para.text.strip()
+                if txt:
+                    out.append(txt)
+        if slide.has_notes_slide:
+            notes = slide.notes_slide.notes_text_frame.text.strip()
+            if notes:
+                out.append("")
+                out.append(f"_Notes:_ {notes}")
+        out.append("")
+    return "\n".join(out).strip()
+
+
+def _extract_xlsx(path: Path) -> str:
+    """Extract text from a .xlsx via openpyxl (read-only + values-only mode).
+
+    Blocking — call in executor. Each sheet is dumped as tab-separated rows
+    up to ``_XLSX_MAX_ROWS_PER_SHEET``; past that, a truncation marker is
+    appended. ``read_only=True`` streams rows (low RAM for large workbooks);
+    ``data_only=True`` returns cached cell values rather than formula text.
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(str(path), read_only=True, data_only=True)
+    try:
+        out: list[str] = []
+        for sheet in wb.worksheets:
+            out.append(f"## Sheet: {sheet.title}")
+            truncated = False
+            for i, row in enumerate(sheet.iter_rows(values_only=True)):
+                if i >= _XLSX_MAX_ROWS_PER_SHEET:
+                    truncated = True
+                    break
+                cells = [
+                    "" if v is None else str(v).replace("\t", " ").replace("\n", " ")
+                    for v in row
+                ]
+                # Drop wholly-empty trailing cells for readability.
+                while cells and cells[-1] == "":
+                    cells.pop()
+                if cells:
+                    out.append("\t".join(cells))
+            if truncated:
+                out.append(f"[... 已截断，仅展示前 {_XLSX_MAX_ROWS_PER_SHEET} 行]")
+            out.append("")
+        return "\n".join(out).strip()
+    finally:
+        wb.close()

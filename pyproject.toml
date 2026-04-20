@@ -24,6 +24,8 @@ dependencies = [
     "aiosmtplib",
     "pdfplumber",
     "python-docx",
+    "python-pptx",
+    "openpyxl",
     "python-magic",
     "httpx",
     "ulid-py",

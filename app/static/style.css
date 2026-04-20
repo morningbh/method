@@ -321,6 +321,46 @@ button.ghost:hover, .button.ghost:hover {
   gap: 16px;
 }
 
+.mode-selector {
+  border: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.mode-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.mode-option input[type="radio"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.mode-tag {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--warning);
+  background: var(--warning-subtle);
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 2px;
+  letter-spacing: 0.02em;
+}
+.visually-hidden {
+  position: absolute !important;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
 .drop-zone {
   border: 2px dashed var(--border);
   border-radius: var(--radius-lg);
@@ -383,6 +423,15 @@ button.ghost:hover, .button.ghost:hover {
   background: var(--border-subtle);
   color: var(--text);
 }
+.chips li.chip-image { padding: 4px 10px 4px 4px; }
+.chips li .chip-thumb {
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
 
 #submit-row {
   display: flex;
@@ -402,6 +451,37 @@ button.ghost:hover, .button.ghost:hover {
   gap: 12px;
 }
 .cards > li { list-style: none; }
+
+.card-row {
+  position: relative;
+}
+.card-row .card { padding-right: 48px; }
+.card-delete {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.card-delete:hover,
+.card-delete:focus-visible {
+  color: var(--error);
+  background: var(--error-subtle);
+  outline: none;
+}
+.card-delete:active { transform: translateY(-50%) scale(0.95); }
+.card-row.removing { opacity: 0; transition: opacity 0.2s ease; }
 
 .card {
   display: flex;
