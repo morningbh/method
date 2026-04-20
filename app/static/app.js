@@ -299,6 +299,11 @@
   function renderMarkdown(md) {
     const body = document.getElementById("markdown-body");
     if (!body) return;
+    if (md) {
+      // Store the raw source on the element so comment anchoring can find
+      // the absolute character offset of a selection back in the markdown.
+      body.setAttribute("data-markdown-source", md);
+    }
     if (md && window.marked && typeof window.marked.parse === "function") {
       body.innerHTML = window.marked.parse(md, {
         gfm: true, breaks: false, headerIds: false, mangle: false,
@@ -456,12 +461,267 @@
     });
   }
 
+  // ---------- History detail: selection-anchored comments ----------
+  function initComments() {
+    const detail = document.querySelector(".detail");
+    if (!detail) return;
+    const requestId = detail.getAttribute("data-request-id");
+    const listEl = document.getElementById("comment-list");
+    const composeDialog = document.getElementById("comment-compose");
+    const tool = document.getElementById("selection-tool");
+    if (!listEl || !composeDialog || !tool) return;
+
+    const ANCHOR_CONTEXT_LEN = 50;
+
+    function fmtAbsTime(iso) {
+      if (!iso) return "";
+      try {
+        const d = new Date(iso);
+        return d.toLocaleString();
+      } catch (_) { return iso; }
+    }
+
+    function escapeHTML(s) {
+      return (s || "").replace(/[&<>"']/g, function (c) {
+        return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c];
+      });
+    }
+
+    function renderCommentCard(item) {
+      const li = document.createElement("li");
+      li.className = "comment-card";
+      li.setAttribute("data-cid", item.id);
+      const ai = item.ai_reply;
+      li.innerHTML =
+        '<blockquote class="excerpt">' + escapeHTML(item.anchor_text) + "</blockquote>" +
+        '<div class="user-comment">' +
+          '<span class="author">你</span>' +
+          '<span class="time">' + escapeHTML(fmtAbsTime(item.created_at)) + "</span>" +
+          '<p class="body">' + escapeHTML(item.body) + "</p>" +
+          '<button type="button" class="delete-btn" aria-label="删除" title="删除">×</button>' +
+        "</div>" +
+        '<div class="ai-reply" data-status="' + escapeHTML((ai && ai.ai_status) || "pending") + '" data-ai-cid="' + escapeHTML((ai && ai.id) || "") + '">' +
+          '<span class="author">AI 评论员</span>' +
+          '<p class="body">' + escapeHTML((ai && ai.body) || (ai && ai.ai_status === "failed" ? ("[失败] " + (ai.ai_error || "")) : "思考中...")) + "</p>" +
+        "</div>";
+      return li;
+    }
+
+    function appendCommentCard(item) {
+      listEl.appendChild(renderCommentCard(item));
+      if (item.ai_reply && (item.ai_reply.ai_status === "pending" || item.ai_reply.ai_status === "streaming")) {
+        subscribeAIReply(item.ai_reply.id);
+      }
+    }
+
+    function loadComments() {
+      return fetch("/api/research/" + encodeURIComponent(requestId) + "/comments")
+        .then((r) => r.ok ? r.json() : { comments: [] })
+        .then((data) => {
+          listEl.innerHTML = "";
+          (data.comments || []).forEach(appendCommentCard);
+        })
+        .catch(() => { /* no-op */ });
+    }
+
+    function subscribeAIReply(aiCid) {
+      if (!aiCid) return;
+      const url = "/api/research/" + encodeURIComponent(requestId) +
+                  "/comments/stream?comment_id=" + encodeURIComponent(aiCid);
+      const es = new EventSource(url);
+      const card = listEl.querySelector('.ai-reply[data-ai-cid="' + aiCid + '"]');
+      let buffer = (card && card.querySelector(".body").textContent) || "";
+      // Reset to empty for streaming accumulation (placeholder was "思考中...").
+      if (card) { card.setAttribute("data-status", "streaming"); card.querySelector(".body").textContent = ""; buffer = ""; }
+      es.addEventListener("ai_delta", (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          buffer += d.text || "";
+          if (card) card.querySelector(".body").textContent = buffer;
+        } catch (_) { /* no-op */ }
+      });
+      es.addEventListener("ai_done", (ev) => {
+        es.close();
+        try {
+          const d = JSON.parse(ev.data);
+          if (card) {
+            card.setAttribute("data-status", d.ai_status || "done");
+            if (d.ai_status === "failed") {
+              card.querySelector(".body").textContent = "[失败] " + (d.ai_error || "unknown");
+            } else if (d.body) {
+              card.querySelector(".body").textContent = d.body;
+            }
+          }
+        } catch (_) { /* no-op */ }
+      });
+      es.onerror = () => { es.close(); };
+    }
+
+    // ---------- Selection detection ----------
+    const sources = []; // {el, source, kind}
+    function registerSource(el, kind) {
+      if (!el) return;
+      // Populate data-markdown-source with the current text if not set; JS
+      // will also update when renderMarkdown sets the plan body.
+      if (!el.getAttribute("data-markdown-source")) {
+        el.setAttribute("data-markdown-source", el.textContent || "");
+      }
+      sources.push({ el: el, kind: kind });
+    }
+    registerSource(document.getElementById("markdown-body"), "plan");
+    document.querySelectorAll(".error-banner[data-markdown-source]").forEach((el) => registerSource(el, "error"));
+
+    let currentSelection = null; // { text, before, after, sourceEl }
+
+    function captureSelection() {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) { hideTool(); return; }
+      const text = sel.toString();
+      if (!text || !text.trim()) { hideTool(); return; }
+      const range = sel.getRangeAt(0);
+      // Find which registered source contains the selection.
+      let sourceRec = null;
+      for (const s of sources) {
+        if (s.el && s.el.contains(range.commonAncestorContainer)) { sourceRec = s; break; }
+      }
+      if (!sourceRec) { hideTool(); return; }
+      // Compute before/after from the DOM text content as a reasonable proxy
+      // for the markdown source. This is a best-effort anchor; v1 does not
+      // require exact offset reversal.
+      const sourceText = sourceRec.el.getAttribute("data-markdown-source") || sourceRec.el.textContent || "";
+      const idx = sourceText.indexOf(text);
+      let before = "", after = "";
+      if (idx >= 0) {
+        before = sourceText.slice(Math.max(0, idx - ANCHOR_CONTEXT_LEN), idx);
+        after = sourceText.slice(idx + text.length, idx + text.length + ANCHOR_CONTEXT_LEN);
+      }
+      currentSelection = { text: text, before: before, after: after, sourceEl: sourceRec.el };
+      showTool(range);
+    }
+    function showTool(range) {
+      const rect = range.getBoundingClientRect();
+      tool.hidden = false;
+      tool.classList.remove("hidden");
+      tool.style.top = (window.scrollY + rect.top - tool.offsetHeight - 8) + "px";
+      tool.style.left = (window.scrollX + rect.left) + "px";
+    }
+    function hideTool() {
+      tool.hidden = true;
+      tool.classList.add("hidden");
+    }
+    document.addEventListener("mouseup", () => setTimeout(captureSelection, 0));
+    document.addEventListener("selectionchange", () => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) hideTool();
+    });
+
+    // ---------- Compose dialog ----------
+    const addBtn = document.getElementById("add-comment-btn");
+    const bodyInput = composeDialog.querySelector(".comment-body-input");
+    const excerptEl = composeDialog.querySelector(".selected-excerpt");
+    const cancelBtn = composeDialog.querySelector(".cancel");
+    const submitBtn = composeDialog.querySelector(".submit");
+    const form = composeDialog.querySelector("form");
+
+    function openCompose() {
+      if (!currentSelection) return;
+      excerptEl.textContent = currentSelection.text;
+      bodyInput.value = "";
+      if (typeof composeDialog.showModal === "function") composeDialog.showModal();
+      else composeDialog.setAttribute("open", "");
+      setTimeout(() => bodyInput.focus(), 50);
+      hideTool();
+    }
+    function closeCompose() {
+      if (typeof composeDialog.close === "function") composeDialog.close();
+      else composeDialog.removeAttribute("open");
+    }
+    if (addBtn) addBtn.addEventListener("click", openCompose);
+    if (cancelBtn) cancelBtn.addEventListener("click", (e) => { e.preventDefault(); closeCompose(); });
+    if (form) form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = (bodyInput.value || "").trim();
+      if (!body) { alert("评论不能为空"); return; }
+      if (!currentSelection) { alert("请先选中方案里的一段文字"); return; }
+      submitBtn.disabled = true;
+      try {
+        const r = await fetch("/api/research/" + encodeURIComponent(requestId) + "/comments", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            anchor_before: currentSelection.before || "",
+            anchor_text: currentSelection.text,
+            anchor_after: currentSelection.after || "",
+            body: body,
+          }),
+        });
+        const resBody = await r.json().catch(() => ({}));
+        if (r.status === 201) {
+          const userObj = resBody.comment || resBody.user_comment;
+          const ai = resBody.ai_placeholder;
+          appendCommentCard({
+            id: userObj.id,
+            author: "user",
+            anchor_text: userObj.anchor_text,
+            body: userObj.body,
+            created_at: userObj.created_at,
+            ai_reply: ai,
+          });
+          closeCompose();
+          currentSelection = null;
+        } else if (r.status === 400) {
+          alert("提交失败：" + (resBody.error || r.status));
+        } else if (r.status === 409) {
+          alert("当前请求还在生成中，请等它结束再评论");
+        } else if (r.status === 401) {
+          alert("登录已过期，请刷新页面");
+        } else {
+          alert("提交失败 (" + r.status + ")");
+        }
+      } catch (_) {
+        alert("网络错误，请稍后再试");
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    // ---------- Delete ----------
+    listEl.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest(".delete-btn");
+      if (!btn) return;
+      const card = btn.closest(".comment-card");
+      const cid = card && card.getAttribute("data-cid");
+      if (!cid) return;
+      if (!window.confirm("删除这条评论？AI 回复也会一起删掉，不可恢复。")) return;
+      btn.disabled = true;
+      try {
+        const r = await fetch("/api/research/" + encodeURIComponent(requestId) +
+                              "/comments/" + encodeURIComponent(cid),
+                              { method: "DELETE" });
+        if (r.status === 204) {
+          card.classList.add("removing");
+          setTimeout(() => card.remove(), 200);
+        } else {
+          alert("删除失败 (" + r.status + ")");
+          btn.disabled = false;
+        }
+      } catch (_) {
+        alert("网络错误");
+        btn.disabled = false;
+      }
+    });
+
+    // Initial load.
+    loadComments();
+  }
+
   function init() {
     initLogin();
     initLogout();
     initIndex();
     initDetail();
     initHistoryDelete();
+    initComments();
   }
 
   if (document.readyState === "loading") {

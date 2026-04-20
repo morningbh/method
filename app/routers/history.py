@@ -213,6 +213,22 @@ async def history_detail(
             .all()
         )
 
+    # Load plan markdown (when done) so the template can seed
+    # data-markdown-source for selection-anchored comments. Best-effort: a
+    # missing file just leaves the attribute empty.
+    plan_markdown = ""
+    if req.status == "done" and req.plan_path:
+        from pathlib import Path as _Path
+
+        try:
+            plan_markdown = _Path(req.plan_path).read_text(encoding="utf-8")
+        except OSError:
+            logger.warning(
+                "history_detail plan_path unreadable rid=%s path=%s",
+                request_id,
+                req.plan_path,
+            )
+
     ctx = {
         "title": f"Method — {req.id}",
         "user": user,
@@ -221,6 +237,7 @@ async def history_detail(
         "status": req.status,
         "files": [{"name": f.original_name} for f in files_rows],
         "error_message": req.error_message if req.status == "failed" else None,
+        "plan_markdown": plan_markdown,
         "created_at_iso": _iso(req.created_at) or "",
         "completed_at_iso": _iso(req.completed_at),
         "created_at_display": format_beijing(req.created_at),

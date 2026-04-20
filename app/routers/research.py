@@ -26,12 +26,13 @@ from fastapi import (
     status,
 )
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 
 from app.db import get_sessionmaker
-from app.models import ResearchRequest, UploadedFile, User
+from app.models import Comment, ResearchRequest, UploadedFile, User
 from app.routers.auth import require_user, verify_origin
-from app.services import file_processor, research_runner
+from app.services import comment_runner, file_processor, research_runner
 
 logger = logging.getLogger("method.routes")
 
@@ -443,3 +444,303 @@ async def delete_research(
         "research.delete rid=%s user_id=%s", request_id, user.id
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Comments (Issue #4 — Feature B). See docs/design/issue-4-feature-b-comments.md
+# ---------------------------------------------------------------------------
+
+_MAX_COMMENTS_RETURNED = 200  # design §4 hard cap
+_MAX_ANCHOR_LEN = 2000
+_MAX_ANCHOR_AROUND = 50
+_MAX_BODY_LEN = 2000
+
+
+class CommentCreateIn(BaseModel):
+    # No pydantic-level length limits: over-limit values must surface as
+    # 400 {"error": "..."} per design §4, not as 422 default validation errors.
+    anchor_before: str = ""
+    anchor_text: str
+    anchor_after: str = ""
+    body: str
+
+
+def _serialize_comment(row: Comment) -> dict:
+    """API shape per design §4 — excludes user_id and deleted_at."""
+    return {
+        "id": row.id,
+        "request_id": row.request_id,
+        "parent_id": row.parent_id,
+        "author": row.author,
+        "anchor_text": row.anchor_text,
+        "anchor_before": row.anchor_before,
+        "anchor_after": row.anchor_after,
+        "body": row.body,
+        "ai_status": row.ai_status,
+        "ai_error": row.ai_error,
+        "cost_usd": row.cost_usd,
+        "created_at": _utcnow_iso(row.created_at),
+    }
+
+
+@router.post(
+    "/api/research/{request_id}/comments",
+    dependencies=[Depends(verify_origin)],
+)
+async def post_comment(
+    request_id: str,
+    payload: CommentCreateIn,
+    user: User = Depends(require_user),
+) -> JSONResponse:
+    # Owner check + status gate.
+    req = await _load_owned(request_id, user)
+    if req is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    if req.status not in ("done", "failed"):
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"error": "request_not_finalized"},
+        )
+
+    # Manual length validation — must surface as 400 with structured error
+    # body, not as 422 default validation response.
+    if not payload.anchor_text or len(payload.anchor_text) > _MAX_ANCHOR_LEN:
+        return JSONResponse(
+            status_code=400, content={"error": "anchor_text_invalid"}
+        )
+    if not payload.body or len(payload.body) > _MAX_BODY_LEN:
+        return JSONResponse(
+            status_code=400, content={"error": "body_invalid"}
+        )
+    if (
+        len(payload.anchor_before) > _MAX_ANCHOR_AROUND
+        or len(payload.anchor_after) > _MAX_ANCHOR_AROUND
+    ):
+        return JSONResponse(
+            status_code=400, content={"error": "anchor_context_too_long"}
+        )
+
+    # Normalize body via comment_runner; empty → 400 body_empty (design §5).
+    try:
+        result = await comment_runner.create_user_comment(
+            request_id=request_id,
+            user_id=user.id,
+            payload=payload.model_dump(),
+        )
+    except comment_runner.BodyEmptyError:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "body_empty"},
+        )
+    except Exception:
+        logger.exception(
+            "post_comment create failed rid=%s user_id=%s", request_id, user.id
+        )
+        return JSONResponse(
+            status_code=500, content={"error": "internal"}
+        )
+
+    # Spawn AI reply generation (background task).
+    ai_placeholder = result.get("ai_placeholder") or {}
+    ai_cid = ai_placeholder.get("id")
+    if ai_cid:
+        await comment_runner.run_ai_reply(ai_cid)
+
+    logger.info(
+        "research.post_comment rid=%s user_id=%s cid=%s",
+        request_id,
+        user.id,
+        (result.get("comment") or {}).get("id"),
+    )
+    return JSONResponse(status_code=201, content=result)
+
+
+@router.get("/api/research/{request_id}/comments")
+async def get_comments(
+    request_id: str,
+    user: User = Depends(require_user),
+) -> JSONResponse:
+    req = await _load_owned(request_id, user)
+    if req is None:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    # Design §2: single SELECT (all rows for the request, filtered deleted),
+    # then Python nests AI replies under their user parents (avoid N+1).
+    async with get_sessionmaker()() as s:
+        result = await s.execute(
+            select(Comment)
+            .where(
+                Comment.request_id == request_id,
+                Comment.deleted_at.is_(None),
+            )
+            .order_by(Comment.created_at.asc())
+        )
+        rows = list(result.scalars().all())
+
+    # Partition: user comments in order; AI replies by parent_id.
+    ai_by_parent: dict[str, Comment] = {}
+    user_rows: list[Comment] = []
+    for r in rows:
+        if r.author == "ai" and r.parent_id is not None:
+            # If multiple AI rows point at the same parent (shouldn't happen
+            # in MVP-1 but the schema allows it), keep the latest.
+            prior = ai_by_parent.get(r.parent_id)
+            if prior is None or (r.created_at and prior.created_at and r.created_at >= prior.created_at):
+                ai_by_parent[r.parent_id] = r
+        elif r.author == "user":
+            user_rows.append(r)
+
+    # Hard cap at 200; oldest-first already, so slice from the end.
+    truncated = len(user_rows) > _MAX_COMMENTS_RETURNED
+    if truncated:
+        # Design §4: "超过按 created_at DESC 截断" — keep the newest 200.
+        user_rows = user_rows[-_MAX_COMMENTS_RETURNED:]
+
+    comments_payload = []
+    for u in user_rows:
+        item = _serialize_comment(u)
+        item.pop("ai_status", None)
+        item.pop("ai_error", None)
+        item.pop("cost_usd", None)
+        ai = ai_by_parent.get(u.id)
+        item["ai_reply"] = _serialize_comment(ai) if ai is not None else None
+        comments_payload.append(item)
+
+    headers = {}
+    if truncated:
+        headers["X-Comments-Truncated"] = "true"
+
+    return JSONResponse(
+        status_code=200,
+        content={"comments": comments_payload},
+        headers=headers,
+    )
+
+
+@router.delete(
+    "/api/research/{request_id}/comments/{comment_id}",
+    dependencies=[Depends(verify_origin)],
+)
+async def delete_comment(
+    request_id: str,
+    comment_id: str,
+    user: User = Depends(require_user),
+) -> Response:
+    req = await _load_owned(request_id, user)
+    if req is None:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    # Look up the comment. If it's an AI reply, 403. If missing / cross-user,
+    # 404 (no enumeration oracle).
+    async with get_sessionmaker()() as s:
+        row = (
+            await s.execute(
+                select(Comment).where(
+                    Comment.id == comment_id,
+                    Comment.request_id == request_id,
+                    Comment.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="not_found")
+    if row.author == "ai":
+        return JSONResponse(
+            status_code=403,
+            content={"error": "ai_reply_not_deletable"},
+        )
+    if row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    touched = await comment_runner.cascade_soft_delete(
+        request_id=request_id,
+        comment_id=comment_id,
+        user_id=user.id,
+    )
+    if touched == 0:
+        # Race: row disappeared between lookup and delete.
+        raise HTTPException(status_code=404, detail="not_found")
+
+    logger.info(
+        "research.delete_comment rid=%s cid=%s user_id=%s touched=%d",
+        request_id,
+        comment_id,
+        user.id,
+        touched,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/api/research/{request_id}/comments/stream")
+async def get_comments_stream(
+    request_id: str,
+    comment_id: str,
+    user: User = Depends(require_user),
+) -> StreamingResponse:
+    """SSE channel for a single AI reply's deltas + done event."""
+    req = await _load_owned(request_id, user)
+    if req is None:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    # Verify comment_id belongs to this request.
+    async with get_sessionmaker()() as s:
+        row = (
+            await s.execute(
+                select(Comment).where(
+                    Comment.id == comment_id,
+                    Comment.request_id == request_id,
+                )
+            )
+        ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="not_found")
+
+    # If the AI reply is already terminal, replay one event and close.
+    if row.ai_status in ("done", "failed"):
+        terminal = {
+            "comment_id": comment_id,
+            "body": row.body,
+            "ai_status": row.ai_status,
+            "ai_error": row.ai_error,
+            "cost_usd": row.cost_usd,
+        }
+
+        async def _replay() -> AsyncIterator[str]:
+            yield _sse_frame("ai_done", terminal)
+
+        return StreamingResponse(
+            _replay(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Live subscribe for pending/streaming rows.
+    queue = comment_runner.subscribe(comment_id)
+
+    async def _live() -> AsyncIterator[str]:
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                if not isinstance(event, tuple) or not event:
+                    continue
+                tag = event[0]
+                if tag == "ai_delta":
+                    yield _sse_frame("ai_delta", event[1])
+                elif tag == "ai_done":
+                    yield _sse_frame("ai_done", event[1])
+                    break
+                elif tag == "__close__":
+                    break
+        except asyncio.CancelledError:
+            raise
+        finally:
+            comment_runner.unsubscribe(comment_id, queue)
+
+    return StreamingResponse(
+        _live(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
