@@ -40,7 +40,7 @@ GDRIVE_KEEP_DAYS = 90
 HEALTH_URL_PUBLIC = "https://method.xvc.com/api/health"
 STATIC_URL_APPJS = "https://method.xvc.com/static/app.js"
 SERVICE_UNIT = "method.service"
-REQUIRED_ENV_KEYS = ("DATABASE_URL", "SESSION_SECRET", "SMTP_PASSWORD")
+REQUIRED_ENV_KEYS = ("DB_PATH", "SESSION_SECRET", "SMTP_PASSWORD", "BASE_URL")
 
 # --------- log / report plumbing ---------
 
