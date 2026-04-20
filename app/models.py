@@ -12,6 +12,7 @@ from datetime import datetime
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -25,6 +26,7 @@ from app.db import Base
 __all__ = [
     "ApprovalToken",
     "Base",
+    "Comment",
     "LoginCode",
     "ResearchRequest",
     "Session",
@@ -132,6 +134,53 @@ class UploadedFile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
+class Comment(Base):
+    """Issue #4 — selection-anchored comments on a research plan + AI replies.
+
+    See ``docs/design/issue-4-feature-b-comments.md`` §2 for the contract.
+    """
+
+    __tablename__ = "comments"
+    __table_args__ = (
+        CheckConstraint(
+            "author IN ('user','ai')",
+            name="ck_comments_author",
+        ),
+        CheckConstraint(
+            "ai_status IS NULL OR ai_status IN "
+            "('pending','streaming','done','failed')",
+            name="ck_comments_ai_status",
+        ),
+    )
+
+    # ULID primary key — 26-char Crockford base32 string.
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    request_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("research_requests.id"), nullable=False
+    )
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False
+    )
+    # AI replies point at their user comment's id; user comments are NULL.
+    parent_id: Mapped[str | None] = mapped_column(
+        Text, ForeignKey("comments.id"), nullable=True
+    )
+    author: Mapped[str] = mapped_column(Text, nullable=False)
+    anchor_text: Mapped[str] = mapped_column(Text, nullable=False)
+    anchor_before: Mapped[str] = mapped_column(Text, nullable=False)
+    anchor_after: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL for user comments; one of pending/streaming/done/failed for AI.
+    ai_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Non-empty when ai_status='failed' (HARNESS §1 parity).
+    ai_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Per-reply Anthropic API cost; only set when ai_status='done'.
+    cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # Soft-delete marker — list/get queries always filter `deleted_at IS NULL`.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 # Indexes required by spec §2.1.
 Index("idx_sessions_token", Session.token_hash)
 Index("idx_login_codes_user", LoginCode.user_id, LoginCode.expires_at)
@@ -141,3 +190,6 @@ Index(
     ResearchRequest.user_id,
     ResearchRequest.created_at.desc(),
 )
+# Indexes required by Issue #4 design §2.
+Index("idx_comments_request_created", Comment.request_id, Comment.created_at)
+Index("idx_comments_parent", Comment.parent_id)

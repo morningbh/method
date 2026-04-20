@@ -18,9 +18,33 @@
     <a id="download-btn" class="button" href="/api/research/{{ request_id }}/download"{% if status != "done" %} aria-disabled="true" tabindex="-1"{% endif %}>下载 .md</a>
   </div>
   {% if status == "failed" %}
-  <div class="error-banner">{{ error_message }}</div>
+  <div class="error-banner" data-markdown-source="{{ error_message }}">{{ error_message }}</div>
   {% endif %}
-  <article id="markdown-body" class="markdown"></article>
+  <article id="markdown-body" class="markdown-body" data-markdown-source="{{ plan_markdown|default('') }}"></article>
+
+  {% if status in ("done", "failed") %}
+  <div id="selection-tool" class="selection-tool hidden" hidden>
+    <button id="add-comment-btn" type="button">💬 评论</button>
+  </div>
+
+  <section class="comments">
+    <h2>评论</h2>
+    <ul id="comment-list" class="comment-list"></ul>
+    <p class="comments-hint hidden">还没有评论。选中方案里的一段文字开始评论。</p>
+  </section>
+
+  <dialog id="comment-compose" class="comment-compose">
+    <form method="dialog">
+      <blockquote class="selected-excerpt"></blockquote>
+      <textarea class="comment-body-input" maxlength="2000"
+                placeholder="写下你的评论（≤ 2000 字符）..."></textarea>
+      <div class="comment-actions">
+        <button type="button" class="cancel">取消</button>
+        <button type="submit" class="submit primary">发送</button>
+      </div>
+    </form>
+  </dialog>
+  {% endif %}
 </section>
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/app.js"></script>

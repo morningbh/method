@@ -846,10 +846,12 @@ async def test_delete_comment_cross_user_returns_404(
     integration_db.add(uc)
     await integration_db.commit()
 
+    uc_id = uc.id  # Capture before expire_all; ORM attr access would fire
+                   # a sync lazy SELECT and MissingGreenlet under aiosqlite.
     alice, alice_raw = await auth_session("alicep9@example.com")
     app_client.cookies.set("method_session", alice_raw)
     resp = await app_client.delete(
-        f"/api/research/{RID_DONE}/comments/{uc.id}"
+        f"/api/research/{RID_DONE}/comments/{uc_id}"
     )
     app_client.cookies.clear()
     assert resp.status_code == 404
@@ -858,7 +860,7 @@ async def test_delete_comment_cross_user_returns_404(
     integration_db.expire_all()
     row = (
         await integration_db.execute(
-            select(Comment).where(Comment.id == uc.id)
+            select(Comment).where(Comment.id == uc_id)
         )
     ).scalar_one()
     assert row.deleted_at is None
@@ -915,10 +917,11 @@ async def test_delete_ai_reply_directly_returns_403(
     )
     integration_db.add_all([uc, ai])
     await integration_db.commit()
+    ai_id = ai.id  # Capture before expire_all (MissingGreenlet guard).
 
     app_client.cookies.set("method_session", raw)
     resp = await app_client.delete(
-        f"/api/research/{RID_DONE}/comments/{ai.id}"
+        f"/api/research/{RID_DONE}/comments/{ai_id}"
     )
     app_client.cookies.clear()
 
@@ -930,7 +933,7 @@ async def test_delete_ai_reply_directly_returns_403(
     integration_db.expire_all()
     row = (
         await integration_db.execute(
-            select(Comment).where(Comment.id == ai.id)
+            select(Comment).where(Comment.id == ai_id)
         )
     ).scalar_one()
     assert row.deleted_at is None

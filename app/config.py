@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     claude_timeout_sec: int
     claude_concurrency: int
 
+    # Comment AI (Issue #4 — Feature B). Empty string falls back to
+    # ``claude_model`` (default Opus 4.7). Per design §5, keep an env
+    # override as a cost escape hatch without changing code.
+    comment_model: str = ""
+    claude_comment_timeout_sec: int = 60
+
     # Paths
     db_path: str
     upload_dir: str
